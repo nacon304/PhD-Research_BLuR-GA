@@ -1,0 +1,8 @@
+# Minimal runtime dependencies for BLuR-GA on NeSI.
+# Python 3.10+ is required because the code uses modern type-hint syntax.
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.3
+matplotlib>=3.7
+networkx>=3.1

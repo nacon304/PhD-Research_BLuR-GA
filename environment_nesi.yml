@@ -1,0 +1,12 @@
+name: blur_ga
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - networkx
+  - pip
