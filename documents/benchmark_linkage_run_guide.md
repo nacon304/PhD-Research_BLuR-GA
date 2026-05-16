@@ -12,11 +12,11 @@ Active implemented families in the current preset are:
 - `maxsat`
 
 ```bash
-python scripts/prepare_linkage_benchmarks.py \
-  --output-root ../Dataset/prepared_linkage_benchmark \
-  --preset main \
-  --families all \
-  --seeds 0 1 2 3 4 5 6 7 8 9 \
+python scripts/prepare_linkage_benchmarks.py `
+  --output-root ../Dataset/prepared_linkage_benchmark `
+  --preset main `
+  --families all `
+  --seeds 0 1 2 `
   --overwrite-manifest
 ```
 
@@ -39,12 +39,12 @@ prepared_linkage_benchmark/
 ## 2. Plot ground-truth graphs
 
 ```bash
-python scripts/plot_ground_truth_graphs.py \
-  --dataset-root ../Dataset/prepared_linkage_benchmark \
-  --layout auto \
-  --scale 1.8 \
-  --signed \
-  --write-metrics \
+python scripts/plot_ground_truth_graphs.py `
+  --dataset-root ../Dataset/prepared_linkage_benchmark `
+  --layout auto `
+  --scale 1.8 `
+  --signed `
+  --write-metrics `
   --format png
 ```
 
