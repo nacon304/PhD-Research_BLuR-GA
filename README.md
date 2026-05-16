@@ -99,7 +99,7 @@ python run_blur_ga.py make-tasks \
   --output-root results_nesi \
   --datasets all \
   --classifiers 1 \
-  --ga-types 0 1 2 3 4 5 \
+  --ga-types 0 1 2 3 4 5 6 7 \
   --repeats 10 \
   --outer-folds 3 \
   --inner-folds 3 \

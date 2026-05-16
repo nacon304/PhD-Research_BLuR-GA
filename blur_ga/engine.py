@@ -35,6 +35,9 @@ class RunResult:
     generation_trace: list[dict[str, float | int | str]] = field(default_factory=list)
     linkage_events: list[dict[str, float | int | bool]] = field(default_factory=list)
     graph_snapshots: list[dict[str, float | int]] = field(default_factory=list)
+    archive_chromosomes: np.ndarray | None = None
+    archive_fitness: np.ndarray | None = None
+    archive_generations: np.ndarray | None = None
 
     @property
     def subset_size(self) -> int:
@@ -159,6 +162,9 @@ class GeneticFeatureSelector:
             generation_trace=self.generation_trace,
             linkage_events=self.linkage_events,
             graph_snapshots=self.graph_snapshots,
+            archive_chromosomes=np.vstack(self._archive_chromosomes).astype(np.int8, copy=False) if self._archive_chromosomes else np.empty((0, self.n_features), dtype=np.int8),
+            archive_fitness=np.asarray(self._archive_fitness, dtype=float),
+            archive_generations=np.asarray(self._archive_generations, dtype=int),
         )
 
     def _evaluate(self, chrom: np.ndarray) -> float:

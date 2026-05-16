@@ -432,9 +432,30 @@ def _read_one_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def _read_one_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _is_rep_dir(name: str) -> bool:
+    return name.startswith("rep") or name.startswith("repeat_")
+
+
+def _is_fold_dir(name: str) -> bool:
+    return name.startswith("fold") or name.startswith("outer_fold_")
+
+
+def _is_run_dir(name: str) -> bool:
+    return name.startswith("run")
+
+
 def _is_nested_run_summary(path: Path) -> bool:
     parts = path.parts
-    return len(parts) >= 4 and parts[-2].startswith("run_") and parts[-3].startswith("outer_fold_") and parts[-4].startswith("repeat_")
+    if len(parts) < 4:
+        return False
+    if path.name != "run_summary.csv" and not path.name.startswith("run_summary_"):
+        return False
+    return _is_run_dir(parts[-2]) and _is_fold_dir(parts[-3]) and _is_rep_dir(parts[-4])
 
 
 def _method_dir_from_run_summary(path: Path) -> Path:
@@ -443,33 +464,63 @@ def _method_dir_from_run_summary(path: Path) -> Path:
     return path.parent
 
 
-def _prefix_from_summary_name(path: Path) -> str:
-    stem = path.stem
-    if not stem.startswith("run_summary_"):
-        raise ValueError(path)
-    body = stem[len("run_summary_"):]
-    return body.rsplit("_r", 1)[0]
+def _prefix_from_summary_rows(rows: list[dict[str, str]], fallback_path: Path) -> str:
+    if rows:
+        first = rows[0]
+        c = first.get("classifier_type")
+        a = first.get("ga_type")
+        if c not in (None, "") and a not in (None, ""):
+            return f"c{int(float(c))}_a{int(float(a))}"
+    stem = fallback_path.stem
+    if stem.startswith("run_summary_"):
+        body = stem[len("run_summary_"):]
+        # New compact root files look like run_summary_c2_a1_rep00_fold00_run000.
+        if "_rep" in body:
+            return body.split("_rep", 1)[0]
+        # Old root files looked like run_summary_<dataset>_c2_a1_r0.
+        if "_c" in body and "_a" in body:
+            tail = body.rsplit("_c", 1)[-1].rsplit("_r", 1)[0]
+            return "c" + tail
+        return body.rsplit("_r", 1)[0]
+    return "c0_a0"
 
 
 def _chrom_to_bind(chrom: str) -> str:
     return ", ".join(ch for ch in chrom.strip())
 
 
+def _trace_path_for_summary(summary_path: Path) -> Path:
+    if summary_path.name == "run_summary.csv":
+        return summary_path.with_name("generation_trace.csv")
+    if summary_path.name.startswith("run_summary_"):
+        return summary_path.with_name(summary_path.name.replace("run_summary_", "generation_trace_", 1))
+    return summary_path.with_name("generation_trace.csv")
+
+
 def cmd_aggregate(args: argparse.Namespace) -> int:
     root = Path(args.results_root)
-    nested = [p for p in root.rglob("run_summary_*.csv") if _is_nested_run_summary(p)]
-    paths = nested or list(root.rglob("run_summary_*.csv"))
+    nested = [p for p in root.rglob("run_summary.csv") if _is_nested_run_summary(p)]
+    nested.extend(p for p in root.rglob("run_summary_*.csv") if _is_nested_run_summary(p))
+    paths = sorted(set(nested))
     if not paths:
-        raise FileNotFoundError(f"No run_summary_*.csv files found under {root}")
+        paths = sorted(root.rglob("run_summary_*.csv"))
+    if not paths:
+        raise FileNotFoundError(f"No run_summary CSV files found under {root}")
 
-    groups: dict[tuple[Path, str], list[Path]] = {}
+    groups: dict[tuple[Path, str], list[tuple[Path, list[dict[str, str]]]]] = {}
     for p in paths:
-        groups.setdefault((_method_dir_from_run_summary(p), _prefix_from_summary_name(p)), []).append(p)
+        rows = _read_one_csv(p)
+        if not rows:
+            continue
+        prefix = _prefix_from_summary_rows(rows, p)
+        groups.setdefault((_method_dir_from_run_summary(p), prefix), []).append((p, rows))
 
-    for (method_dir, prefix), summary_paths in sorted(groups.items(), key=lambda kv: str(kv[0][0] / kv[0][1])):
+    for (method_dir, prefix), grouped in sorted(groups.items(), key=lambda kv: str(kv[0][0] / kv[0][1])):
         rows: list[dict[str, str]] = []
-        for p in summary_paths:
-            rows.extend(_read_one_csv(p))
+        summary_paths: list[Path] = []
+        for p, loaded in grouped:
+            summary_paths.append(p)
+            rows.extend(loaded)
         rows.sort(key=lambda r: (int(r["repeat_id"]), int(r["outer_fold"]), int(r["run_id"])))
         method_dir.mkdir(parents=True, exist_ok=True)
 
@@ -491,7 +542,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         write_vector("time", "runtime_seconds", lambda x: f"{float(x):.2f}")
         write_vector("gen", "generations")
         write_vector("evals", "eval_count")
-        if rows and int(rows[0].get("ga_type", "0")) != 0:
+        if rows and int(float(rows[0].get("ga_type", "0"))) != 0:
             write_vector("nedges", "n_edges", lambda x: f"{float(x):.1f}")
         (method_dir / f"bind_{prefix}.csv").write_text("\n".join(_chrom_to_bind(r["best_chromosome"]) for r in rows), encoding="utf-8")
 
@@ -507,8 +558,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
 
         trace_paths: list[Path] = []
         for p in summary_paths:
-            trace_name = p.name.replace("run_summary_", "generation_trace_")
-            t = p.with_name(trace_name)
+            t = _trace_path_for_summary(p)
             if t.exists():
                 trace_paths.append(t)
         if trace_paths:

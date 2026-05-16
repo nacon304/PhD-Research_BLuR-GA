@@ -52,10 +52,22 @@ class ResultWriter:
     ga_type: int
     artifact_layout: ArtifactLayout = "both"
     rows: list[EvaluatedRun] = field(default_factory=list)
+    prefix_override: str | None = None
 
     @property
     def prefix(self) -> str:
-        return f"{self.dataset}_c{self.classifier_type}_a{self.ga_type}"
+        # Dataset and method are already encoded in the directory path:
+        #   <output>/<dataset>/<method>/...
+        # Keep filenames compact and Windows-safe.
+        return self.prefix_override or f"c{self.classifier_type}_a{self.ga_type}"
+
+    def _run_tag(self, row: EvaluatedRun) -> str:
+        return f"rep{row.repeat_id:02d}_fold{row.outer_fold:02d}_run{row.run_id:03d}"
+
+    def _artifact_name(self, base: str, row: EvaluatedRun | None = None, *, root_level: bool = False) -> str:
+        if root_level and row is not None:
+            return f"{base}_{self.prefix}_{self._run_tag(row)}.csv"
+        return f"{base}.csv"
 
     @property
     def _write_nested(self) -> bool:
@@ -83,7 +95,7 @@ class ResultWriter:
         self._write_generation_traces()
 
     def _run_dir(self, row: EvaluatedRun) -> Path:
-        return self.output_dir / f"repeat_{row.repeat_id:02d}" / f"outer_fold_{row.outer_fold:02d}" / f"run_{row.run_id:03d}"
+        return self.output_dir / f"rep{row.repeat_id:02d}" / f"fold{row.outer_fold:02d}" / f"run{row.run_id:03d}"
 
     def save_run_artifacts(self, row: EvaluatedRun) -> None:
         """Save per-run artifacts.  This is the HPC-safe output layer."""
@@ -91,14 +103,14 @@ class ResultWriter:
         run_dir = self._run_dir(row)
         if self._write_nested:
             run_dir.mkdir(parents=True, exist_ok=True)
-            self._write_run_summary(row, run_dir / f"run_summary_{self.prefix}_r{row.run_id}.csv")
-            self._write_run_selected_features(row, run_dir / f"selected_features_{self.prefix}_r{row.run_id}.csv")
-            self._write_run_generation_trace(row, run_dir / f"generation_trace_{self.prefix}_r{row.run_id}.csv")
+            self._write_run_summary(row, run_dir / self._artifact_name("run_summary"))
+            self._write_run_selected_features(row, run_dir / self._artifact_name("selected_features"))
+            self._write_run_generation_trace(row, run_dir / self._artifact_name("generation_trace"))
 
         if self._write_root:
-            self._write_run_summary(row, self.output_dir / f"run_summary_{self.prefix}_r{row.run_id}.csv")
-            self._write_run_selected_features(row, self.output_dir / f"selected_features_{self.prefix}_r{row.run_id}.csv")
-            self._write_run_generation_trace(row, self.output_dir / f"generation_trace_{self.prefix}_r{row.run_id}.csv")
+            self._write_run_summary(row, self.output_dir / self._artifact_name("run_summary", row, root_level=True))
+            self._write_run_selected_features(row, self.output_dir / self._artifact_name("selected_features", row, root_level=True))
+            self._write_run_generation_trace(row, self.output_dir / self._artifact_name("generation_trace", row, root_level=True))
 
         if row.run_result is None or row.run_result.evig is None:
             return
@@ -110,11 +122,12 @@ class ResultWriter:
             graph_dirs.append(self.output_dir)
 
         for target_dir in graph_dirs:
-            row.run_result.evig.save_matrix(target_dir / f"eVIG_{self.prefix}_r{row.run_id}.csv")
+            root_level = target_dir == self.output_dir
+            row.run_result.evig.save_matrix(target_dir / self._artifact_name("eVIG", row, root_level=root_level))
             if hasattr(row.run_result.evig, "save_coefficient_matrix"):
-                row.run_result.evig.save_coefficient_matrix(target_dir / f"eVIG_coefficients_{self.prefix}_r{row.run_id}.csv")
-            row.run_result.evig.save_edges(target_dir / f"eVIG_edges_{self.prefix}_r{row.run_id}.csv")
-            row.run_result.evig.save_tested_pairs(target_dir / f"eVIG_tested_pairs_{self.prefix}_r{row.run_id}.csv")
+                row.run_result.evig.save_coefficient_matrix(target_dir / self._artifact_name("eVIG_coefficients", row, root_level=root_level))
+            row.run_result.evig.save_edges(target_dir / self._artifact_name("eVIG_edges", row, root_level=root_level))
+            row.run_result.evig.save_tested_pairs(target_dir / self._artifact_name("eVIG_tested_pairs", row, root_level=root_level))
 
         self._write_linkage_events(row, run_dir)
         self._write_graph_snapshots(row, run_dir)
@@ -260,9 +273,9 @@ class ResultWriter:
         ]
         paths: list[Path] = []
         if self._write_nested:
-            paths.append(run_dir / f"linkage_events_{self.prefix}_r{row.run_id}.csv")
+            paths.append(run_dir / self._artifact_name("linkage_events"))
         if self._write_root:
-            paths.append(self.output_dir / f"linkage_events_{self.prefix}_r{row.run_id}.csv")
+            paths.append(self.output_dir / self._artifact_name("linkage_events", row, root_level=True))
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", newline="", encoding="utf-8") as f:
@@ -315,9 +328,9 @@ class ResultWriter:
         ]
         paths: list[Path] = []
         if self._write_nested:
-            paths.append(run_dir / f"graph_snapshots_{self.prefix}_r{row.run_id}.csv")
+            paths.append(run_dir / self._artifact_name("graph_snapshots"))
         if self._write_root:
-            paths.append(self.output_dir / f"graph_snapshots_{self.prefix}_r{row.run_id}.csv")
+            paths.append(self.output_dir / self._artifact_name("graph_snapshots", row, root_level=True))
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", newline="", encoding="utf-8") as f:
