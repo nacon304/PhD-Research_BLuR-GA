@@ -33,16 +33,17 @@ import pandas as pd
 from blur_ga.benchmarks import build_problem, write_problem
 
 
-FAMILIES = ["pairwise", "ising", "planted_xor", "nk", "maxsat", "gametes"]
+# FAMILIES = ["pairwise", "ising", "planted_xor", "nk", "maxsat", "gametes"]
+FAMILIES = ["pairwise", "ising", "nk", "maxsat"]
 
 
 DEBUG_PRESET: dict[str, list[dict[str, Any]]] = {
     "pairwise": [{"n_features": 30, "n_edges": 30, "signed": True, "noise_std": 0.0}],
     "ising": [{"grid_rows": 5, "grid_cols": 5, "signed": True}],
-    "planted_xor": [{"n_features": 30, "n_samples": 800, "group_sizes": (3, 3), "label_noise": 0.03}],
+    # "planted_xor": [{"n_features": 30, "n_samples": 800, "group_sizes": (3, 3), "label_noise": 0.03}],
     "nk": [{"n_features": 30, "k": 3, "neighborhood": "random"}],
     "maxsat": [{"n_features": 35, "n_clauses": 90, "clause_size": 3, "weighted": True}],
-    "gametes": [{"n_features": 30, "n_samples": 800, "n_loci": 2, "maf": 0.25, "label_noise": 0.02}],
+    # "gametes": [{"n_features": 30, "n_samples": 800, "n_loci": 2, "maf": 0.25, "label_noise": 0.02}],
 }
 
 
@@ -56,10 +57,10 @@ MAIN_PRESET: dict[str, list[dict[str, Any]]] = {
         {"grid_rows": 6, "grid_cols": 6, "signed": True},
         {"grid_rows": 10, "grid_cols": 10, "signed": True},
     ],
-    "planted_xor": [
-        {"n_features": 50, "n_samples": 2000, "group_sizes": (3, 3), "label_noise": 0.03},
-        {"n_features": 100, "n_samples": 3000, "group_sizes": (4, 4), "label_noise": 0.05},
-    ],
+    # "planted_xor": [
+    #     {"n_features": 50, "n_samples": 2000, "group_sizes": (3, 3), "label_noise": 0.03},
+    #     {"n_features": 100, "n_samples": 3000, "group_sizes": (4, 4), "label_noise": 0.05},
+    # ],
     "nk": [
         {"n_features": 50, "k": 3, "neighborhood": "random"},
         {"n_features": 80, "k": 5, "neighborhood": "random"},
@@ -68,10 +69,10 @@ MAIN_PRESET: dict[str, list[dict[str, Any]]] = {
         {"n_features": 50, "n_clauses": 150, "clause_size": 3, "weighted": True},
         {"n_features": 100, "n_clauses": 300, "clause_size": 3, "weighted": True},
     ],
-    "gametes": [
-        {"n_features": 50, "n_samples": 2000, "n_loci": 2, "maf": 0.25, "label_noise": 0.02},
-        {"n_features": 100, "n_samples": 3000, "n_loci": 3, "maf": 0.25, "label_noise": 0.03},
-    ],
+    # "gametes": [
+    #     {"n_features": 50, "n_samples": 2000, "n_loci": 2, "maf": 0.25, "label_noise": 0.02},
+    #     {"n_features": 100, "n_samples": 3000, "n_loci": 3, "maf": 0.25, "label_noise": 0.03},
+    # ],
 }
 
 

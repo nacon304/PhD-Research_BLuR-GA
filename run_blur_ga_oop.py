@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("problem", help="Dataset name without .dat, or explicit .dat path")
     parser.add_argument("classifier", type=int, choices=[1, 2], help="1: KNN-3, 2: KNN-5")
-    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3, 4, 5], help="0: standard GA, 1: empirical linkage GA, 2: pairwise LR, 3: main+pairwise LR, 4: sparse, 5: sparse+excess response")
+    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3, 4, 5, 6, 7], help="0: standard GA, 1: empirical linkage GA, 2: pairwise LR, 3: main+pairwise LR, 4: sparse augmented, 5: sparse+excess, 6: pairwise Lasso, 7: partial main+pairwise Lasso")
     parser.add_argument("--data-dir", default=".", help="Directory containing <problem>.dat")
     parser.add_argument("--output-dir", default="results_nested", help="Directory for result CSV files")
     parser.add_argument("--artifact-layout", choices=["both", "nested", "root"], default="both", help="Where to write per-run artifacts. both preserves old root files and nested HPC-safe files.")
@@ -62,13 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph-snapshot-min-weight", type=float, default=0.0, help="Only save snapshot edges with weight >= this value")
     parser.add_argument("--no-fitness-cache", action="store_true", help="Disable chromosome-level fitness cache")
 
-    # Regression-linkage options for ga_type 2--5.
+    # Regression-linkage options for ga_type 2--7.
     parser.add_argument("--lr-gap-gen", type=int, default=5, help="Fit/update the LR linkage graph every N generations")
     parser.add_argument("--lr-min-samples", type=int, default=20, help="Minimum unique evaluated solutions before fitting LR linkage")
     parser.add_argument("--lr-ridge-alpha", type=float, default=1e-6, help="Small ridge penalty for ga_type 2/3; use 0 for pure OLS-like fitting")
     parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="ElasticNet/LASSO alpha for ga_type 4/5")
-    parser.add_argument("--lr-l1-ratio", type=float, default=0.95, help="ElasticNet L1 ratio for ga_type 4/5; 1.0 approximates LASSO")
-    parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in ga_type 4/5")
+    parser.add_argument("--lr-l1-ratio", type=float, default=0.95, help="ElasticNet L1 ratio for ga_type 4/5; ga_type 6/7 use pure Lasso and ignore this option")
+    parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in sparse/Lasso ga_type 4/5/6/7")
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     print("\n ***** BLuR-GA / Nested CV Runner *****")
     print(f"Dataset: {dataset.name} | samples={dataset.n_samples} | features={dataset.n_features}")
     print(f"GA type: {ga_cfg.ga_type} | classifier: KNN-{ga_cfg.knn_k}")
-    if ga_cfg.ga_type in {2, 3, 4, 5}:
+    if ga_cfg.ga_type in {2, 3, 4, 5, 6, 7}:
         print(f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, edge_top_k={ga_cfg.lr_edge_top_k}")
     print(f"Nested CV: outer={exp_cfg.outer_folds}, inner={exp_cfg.inner_folds}, repeats={exp_cfg.repeats}")
     print(f"Output: artifact_layout={exp_cfg.artifact_layout}, aggregate_outputs={exp_cfg.write_aggregate_outputs}")

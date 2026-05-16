@@ -93,6 +93,8 @@ METHOD_FOLDER_NAMES: dict[int, str] = {
     3: "blur_ga_stage2_main_pairwise",
     4: "blur_ga_stage3_sparse",
     5: "blur_ga_stage4_sparse_excess",
+    6: "blur_ga_pairwise_lasso",
+    7: "blur_ga_main_pairwise_lasso",
 }
 
 
@@ -432,11 +434,6 @@ def _read_one_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _read_one_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
 def _is_rep_dir(name: str) -> bool:
     return name.startswith("rep") or name.startswith("repeat_")
 
@@ -614,9 +611,9 @@ if __name__ == "__main__":
 # python run_blur_ga.py aggregate --results-root results_analysis_test_v2
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/repeat_00/outer_fold_00/run_000/graph_snapshots_anneal_task363614_c2_a1_r0.csv `
-#   --trace results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_anneal_task363614_c2_a1.csv `
-#   --selected-features results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_anneal_task363614_c2_a1.csv `
+#   --snapshots results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
+#   --selected-features results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
 #   --run-id 0 `
 #   --output results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
@@ -624,9 +621,9 @@ if __name__ == "__main__":
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/repeat_00/outer_fold_00/run_000/graph_snapshots_anneal_task363614_c2_a2_r0.csv `
-#   --trace results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/generation_trace_anneal_task363614_c2_a2.csv `
-#   --selected-features results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/selected_features_anneal_task363614_c2_a2.csv `
+#   --snapshots results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/generation_trace_c2_a2.csv `
+#   --selected-features results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/selected_features_c2_a2.csv `
 #   --run-id 0 `
 #   --output results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `

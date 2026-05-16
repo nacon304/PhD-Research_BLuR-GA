@@ -14,7 +14,7 @@ class GAConfig:
     """Configuration for one GA/BLuR-GA optimization run.
 
     ga_type:
-        0 = standard GA, 1 = empirical linkage GA, 2--5 = regression-linkage GA variants.
+        0 = standard GA, 1 = empirical linkage GA, 2--7 = regression-linkage GA variants.
     classifier_type:
         1 = KNN with k=3, 2 = KNN with k=5.
     crossover_probability:
@@ -56,11 +56,13 @@ class GAConfig:
     fitness_weight_sparsity: float = 0.02
     cache_fitness: bool = True
 
-    # Regression-linkage learner settings for ga_type 2--5.
+    # Regression-linkage learner settings for ga_type 2--7.
     # ga_type 2: pairwise-only ridge/OLS-like regression.
     # ga_type 3: main effects + pairwise ridge/OLS-like regression.
-    # ga_type 4: sparse main + pairwise ElasticNet/LASSO-style regression.
-    # ga_type 5: sparse model with baseline-standardized excess accuracy response.
+    # ga_type 4: backward-compatible sparse augmented main+pairwise ElasticNet/Lasso.
+    # ga_type 5: backward-compatible sparse augmented model with baseline-standardized excess response.
+    # ga_type 6: theory-aligned pairwise Lasso using bipolar pairwise terms.
+    # ga_type 7: theory-aligned partial Main+Pairwise Lasso with unpenalized main controls.
     lr_gap_gen: int = 5
     lr_min_samples: int = 20
     lr_ridge_alpha: float = 1e-6
@@ -75,8 +77,8 @@ class GAConfig:
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
             raise ValueError("classifier_type must be 1 (KNN-3) or 2 (KNN-5).")
-        if self.ga_type not in (0, 1, 2, 3, 4, 5):
-            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, or 2--5 regression-linkage stages.")
+        if self.ga_type not in (0, 1, 2, 3, 4, 5, 6, 7):
+            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, or 2--7 regression-linkage stages.")
         if self.popsize < 4:
             raise ValueError("popsize must be at least 4.")
         if not 0.0 <= self.crossover_probability <= 1.0:
