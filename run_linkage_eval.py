@@ -631,3 +631,18 @@ if __name__ == "__main__":
 
 # python run_linkage_eval.py aggregate `
 #   --results-root Results/results_linkage_test
+
+# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/empirical_linkage_legacy/rep00/fold00/run000"
+
+# python analysis_interactive/make_graph_ui.py `
+#   --snapshots "$RUN/graph_snapshots.csv" `
+#   --trace "$RUN/generation_trace.csv" `
+#   --selected-features "$RUN/selected_features.csv" `
+#   --run-id 0 `
+#   --repeat-id 0 `
+#   --outer-fold 0 `
+#   --output "$RUN/graph_evolution_ui.html" `
+#   --layout spring `
+#   --step 1

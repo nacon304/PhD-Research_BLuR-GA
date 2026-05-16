@@ -603,29 +603,39 @@ if __name__ == "__main__":
 # python run_blur_ga.py batch `
 #   --preset analysis `
 #   --data-dir ../Dataset/prepared_tabarena `
-#   --output-root results_analysis_test `
+#   --output-root Results/results_analysis_test `
 #   --datasets anneal_task363614 `
 #   --classifiers 2 `
-#   --ga-types 1 2
+#   --ga-types 1 6 7
 
-# python run_blur_ga.py aggregate --results-root results_analysis_test_v2
+# python run_blur_ga.py aggregate --results-root Results/results_analysis_test
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
-#   --selected-features results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
+#   --snapshots Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
+#   --selected-features Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
 #   --run-id 0 `
-#   --output results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
+#   --output Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
 #   --initial-spacing 1.25 `
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/generation_trace_c2_a2.csv `
-#   --selected-features results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/selected_features_c2_a2.csv `
+#   --snapshots Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a6.csv `
+#   --selected-features Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a6.csv `
 #   --run-id 0 `
-#   --output results_analysis_test_v2/anneal_task363614/blur_ga_stage1_pairwise/graph_evolution_ui.html `
+#   --output Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
+#   --layout-k-scale 2.0 `
+#   --initial-spacing 1.25 `
+#   --layout spring
+
+# python analysis_interactive/make_graph_ui.py `
+#   --snapshots Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a7.csv `
+#   --selected-features Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a7.csv `
+#   --run-id 0 `
+#   --output Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
 #   --initial-spacing 1.25 `
 #   --layout spring
