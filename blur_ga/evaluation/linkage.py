@@ -42,7 +42,7 @@ def load_true_edges(path: str | Path) -> pd.DataFrame:
 def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | None = None) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     if evig is None:
-        return pd.DataFrame(columns=_predicted_edge_columns())
+        return pd.DataFrame(columns=["rank", *_predicted_edge_columns()])
     n_features = int(getattr(evig, "n_features", 0))
     weight = np.asarray(getattr(evig, "weight"), dtype=float)
     coefficient = np.asarray(getattr(evig, "coefficient", np.zeros_like(weight)), dtype=float)
@@ -78,7 +78,7 @@ def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | 
         df = df.sort_values(["score", "feature_i", "feature_j"], ascending=[False, True, True]).reset_index(drop=True)
         df.insert(0, "rank", np.arange(1, len(df) + 1, dtype=int))
     else:
-        df.insert(0, "rank", [])
+        df.insert(0, "rank", pd.Series(dtype=int))
     return df
 
 
@@ -95,17 +95,17 @@ def _edge_set(df: pd.DataFrame) -> set[tuple[int, int]]:
     return {canonical_pair(r.feature_i, r.feature_j) for r in df.itertuples(index=False)}
 
 
-def precision_recall_f1_at_k(pred: pd.DataFrame, true: pd.DataFrame, k: int) -> tuple[float, float, float, int]:
+def _safe_f1(precision: float, recall: float) -> float:
+    return 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+
+def edge_confusion(pred_subset: pd.DataFrame, true: pd.DataFrame) -> tuple[int, int, int, set[tuple[int, int]], set[tuple[int, int]]]:
     true_set = _edge_set(true)
-    if not true_set:
-        return 0.0, 0.0, 0.0, 0
-    top = pred.head(max(0, int(k))) if not pred.empty else pred
-    pred_set = _edge_set(top)
+    pred_set = _edge_set(pred_subset)
     tp = len(pred_set & true_set)
-    precision = tp / len(pred_set) if pred_set else 0.0
-    recall = tp / len(true_set) if true_set else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-    return precision, recall, f1, tp
+    fp = len(pred_set - true_set)
+    fn = len(true_set - pred_set)
+    return tp, fp, fn, pred_set, true_set
 
 
 def average_precision(pred: pd.DataFrame, true: pd.DataFrame) -> float:
@@ -156,6 +156,69 @@ def sign_accuracy(pred: pd.DataFrame, true: pd.DataFrame) -> float:
     return float(np.mean([pred_map[p] == true_map[p] for p in common]))
 
 
+def _metric_row(
+    pred_subset: pd.DataFrame,
+    true: pd.DataFrame,
+    *,
+    dataset: str,
+    method: str,
+    repeat_id: int,
+    outer_fold: int,
+    run_id: int,
+    seed: int,
+    n_features: int,
+    eval_scope: str,
+    k_requested: int | None,
+    k_effective: int | None,
+    average_precision_value: float,
+    spearman_value: float,
+    sign_accuracy_value: float,
+    n_pred_edges_total: int,
+) -> dict[str, object]:
+    tp, fp, fn, pred_set, true_set = edge_confusion(pred_subset, true)
+    n_eval_edges = len(pred_set)
+    n_true = len(true_set)
+    precision = tp / n_eval_edges if n_eval_edges else 0.0
+    recall = tp / n_true if n_true else 0.0
+    f1 = _safe_f1(precision, recall)
+    strict_denominator = int(k_effective) if eval_scope == "top_k" and k_effective is not None else n_eval_edges
+    precision_strict = tp / strict_denominator if strict_denominator else 0.0
+
+    return {
+        "dataset": dataset,
+        "method": method,
+        "repeat_id": int(repeat_id),
+        "outer_fold": int(outer_fold),
+        "run_id": int(run_id),
+        "seed": int(seed),
+        "eval_scope": eval_scope,
+        "k_requested": "" if k_requested is None else int(k_requested),
+        "k_effective": "" if k_effective is None else int(k_effective),
+        # Backward-compatible alias: for top_k this is k_effective; for all_returned it is n_eval_edges.
+        "k": int(k_effective) if eval_scope == "top_k" and k_effective is not None else int(n_eval_edges),
+        "n_eval_edges": int(n_eval_edges),
+        "true_positives": int(tp),
+        "false_positives": int(fp),
+        "false_negatives": int(fn),
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "precision_strict": float(precision_strict),
+        # Backward-compatible aliases used by old notebooks/scripts.
+        "true_positives_at_k": int(tp),
+        "precision_at_k": float(precision),
+        "recall_at_k": float(recall),
+        "f1_at_k": float(f1),
+        "precision_at_k_strict": float(precision_strict),
+        "average_precision": average_precision_value,
+        "spearman_abs_weight": spearman_value,
+        "sign_accuracy": sign_accuracy_value,
+        "n_true_edges": int(n_true),
+        "n_pred_edges": int(n_pred_edges_total),
+        "n_features": int(n_features),
+    }
+
+
 def evaluate_predicted_edges(
     pred: pd.DataFrame,
     true: pd.DataFrame,
@@ -168,37 +231,68 @@ def evaluate_predicted_edges(
     seed: int,
     n_features: int,
     k_values: Iterable[int] | None = None,
+    include_all_returned: bool = True,
 ) -> pd.DataFrame:
+    """Evaluate a learned edge ranking against ground-truth linkage.
+
+    Two scopes are intentionally reported:
+    - ``all_returned``: evaluate every edge the method actually returned.  This is
+      the default sparse-graph correctness score and does not require choosing k.
+    - ``top_k``: evaluate the first k ranked edges for each requested k.  The row
+      reports both ``precision`` over the evaluated returned edges and
+      ``precision_strict`` over the requested/effective k, so sparse methods are
+      not ambiguous when they return fewer than k edges.
+    """
     n_true = int(len(true))
-    default_ks = [n_true, 2 * n_true, 50, 100]
-    ks = sorted({int(k) for k in (k_values or default_ks) if int(k) > 0})
     total_pairs = n_features * (n_features - 1) // 2
     ap = average_precision(pred, true)
     spear = spearman_weight_correlation(pred, true, n_features)
     sign_acc = sign_accuracy(pred, true)
     rows: list[dict[str, object]] = []
+
+    if include_all_returned:
+        rows.append(_metric_row(
+            pred,
+            true,
+            dataset=dataset,
+            method=method,
+            repeat_id=repeat_id,
+            outer_fold=outer_fold,
+            run_id=run_id,
+            seed=seed,
+            n_features=n_features,
+            eval_scope="all_returned",
+            k_requested=None,
+            k_effective=None,
+            average_precision_value=ap,
+            spearman_value=spear,
+            sign_accuracy_value=sign_acc,
+            n_pred_edges_total=len(pred),
+        ))
+
+    ks = sorted({int(k) for k in (k_values or []) if int(k) > 0})
     for k in ks:
-        kk = min(k, total_pairs)
-        precision, recall, f1, tp = precision_recall_f1_at_k(pred, true, kk)
-        rows.append({
-            "dataset": dataset,
-            "method": method,
-            "repeat_id": int(repeat_id),
-            "outer_fold": int(outer_fold),
-            "run_id": int(run_id),
-            "seed": int(seed),
-            "k": int(kk),
-            "true_positives_at_k": int(tp),
-            "precision_at_k": precision,
-            "recall_at_k": recall,
-            "f1_at_k": f1,
-            "average_precision": ap,
-            "spearman_abs_weight": spear,
-            "sign_accuracy": sign_acc,
-            "n_true_edges": n_true,
-            "n_pred_edges": int(len(pred)),
-            "n_features": int(n_features),
-        })
+        k_effective = min(int(k), total_pairs)
+        top = pred.head(k_effective) if not pred.empty else pred
+        rows.append(_metric_row(
+            top,
+            true,
+            dataset=dataset,
+            method=method,
+            repeat_id=repeat_id,
+            outer_fold=outer_fold,
+            run_id=run_id,
+            seed=seed,
+            n_features=n_features,
+            eval_scope="top_k",
+            k_requested=int(k),
+            k_effective=int(k_effective),
+            average_precision_value=ap,
+            spearman_value=spear,
+            sign_accuracy_value=sign_acc,
+            n_pred_edges_total=len(pred),
+        ))
+
     return pd.DataFrame(rows)
 
 

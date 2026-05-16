@@ -129,15 +129,15 @@ Vì `artifact_layout=nested` và `write_aggregate_outputs=false`, sau khi chạy
 results_analysis_test_v2/
 └── anneal_task363614/
     └── blur_ga_stage1_pairwise/
-        ├── repeat_00/
-        │   ├── outer_fold_00/run_000/
+        ├── rep00/
+        │   ├── fold00/run000/
         │   └── outer_fold_01/run_001/
         └── repeat_01/
-            ├── outer_fold_00/run_002/
+            ├── fold00/run_002/
             └── outer_fold_01/run_003/
 ```
 
-Mỗi `run_xxx/` sẽ có các file quan trọng như:
+Mỗi `runXXX/` sẽ có các file quan trọng như:
 
 ```text
 run_summary_anneal_task363614_c2_a2_rX.csv
@@ -378,7 +378,7 @@ while not stop:
     nếu stagnation > tau_reset: restart population
     nếu ga_type=0: standard GA next generation
     nếu ga_type=1: empirical linkage next generation + update EmpiricalVIG
-    nếu ga_type=2..5: standard GA next generation + fit RegressionVIG mỗi lr_gap_gen
+    nếu ga_type=2..7: standard GA next generation + fit RegressionVIG mỗi lr_gap_gen
     nếu save_generation_trace: ghi trace row
     nếu save_graph_snapshots: chụp edge table theo interval
 return RunResult
@@ -396,7 +396,7 @@ Empirical Variable Interaction Graph cho `ga_type=1`. Nó lưu:
 
 ### 5.11. `blur_ga/lr_linkage.py`
 
-Regression linkage cho `ga_type=2..5`. Nó lấy archive nghiệm đã evaluate trong GA:
+Regression linkage cho `ga_type=2..7`. Nó lấy archive nghiệm đã evaluate trong GA:
 
 ```text
 X_archive = binary chromosomes
@@ -458,7 +458,7 @@ Chứa script SLURM:
 | `selected_features_<prefix>_r<id>.csv` | Luôn per-run | Feature index được chọn trong best chromosome của run. |
 | `generation_trace_<prefix>_r<id>.csv` | Khi `save_generation_trace=True` | Vẽ convergence, fitness, subset size, archive, n_edges theo generation. |
 | `eVIG_<prefix>_r<id>.csv` | Khi có graph, ga_type 1..5 | Ma trận weight adjacency. |
-| `eVIG_coefficients_<prefix>_r<id>.csv` | Regression graph ga_type 2..5 | Ma trận coefficient signed β_ij. |
+| `eVIG_coefficients_<prefix>_r<id>.csv` | Regression graph ga_type 2..7 | Ma trận coefficient signed β_ij. |
 | `eVIG_edges_<prefix>_r<id>.csv` | Khi có graph | Edge list positive/final, dễ phân tích linkage. |
 | `eVIG_tested_pairs_<prefix>_r<id>.csv` | Khi có graph | Pair đã test/fit, gồm cả pair không positive. |
 | `linkage_events_<prefix>_r<id>.csv` | Khi `save_linkage_events=True`, chủ yếu ga_type=1 | Debug empirical linkage từng pair event. |
@@ -480,7 +480,7 @@ Chứa script SLURM:
 - `selected_features_*_r*.csv` và/hoặc `selected_features_*.csv`
 - `generation_trace_*_r*.csv` và/hoặc `generation_trace_*.csv`
 - `eVIG_edges_*_r*.csv`
-- `eVIG_coefficients_*_r*.csv` cho ga_type 2..5
+- `eVIG_coefficients_*_r*.csv` cho ga_type 2..7
 
 ### Nên giữ khi cần graph evolution
 
@@ -634,7 +634,7 @@ Chứa script SLURM:
 | `RunResult.subset_size(self)` | Số feature được chọn trong best chromosome. |
 | `RunResult.n_edges(self)` | Số edge trong evig nếu có. |
 | class `GeneticFeatureSelector` | Lõi GA/BLuR-GA cho binary feature selection. |
-| `GeneticFeatureSelector.__init__(self, config: GAConfig, evaluator: FitnessEvaluator, *, seed: int=1, run_id: int=0)` | Nhận config/evaluator, tạo RNG, archive, learner nếu ga_type=2..5. |
+| `GeneticFeatureSelector.__init__(self, config: GAConfig, evaluator: FitnessEvaluator, *, seed: int=1, run_id: int=0)` | Nhận config/evaluator, tạo RNG, archive, learner nếu ga_type=2..7. |
 | `GeneticFeatureSelector.run(self)` | Main GA loop: init population, tạo thế hệ, update linkage, log trace, stop, trả RunResult. |
 | `GeneticFeatureSelector._evaluate(self, chrom: np.ndarray)` | Gọi evaluator, đồng thời lưu nghiệm unique vào archive cho regression linkage. |
 | `GeneticFeatureSelector._fit_regression_graph(self, evig: RegressionVIG, generation: int)` | Fit RegressionLinkageLearner khi archive đủ lr_min_samples và update RegressionVIG. |
@@ -730,7 +730,7 @@ Chứa script SLURM:
 | `RegressionLinkageLearner._fit_dense_ridge_dual(self, X_design: np.ndarray, y: np.ndarray)` | Giải ridge dạng dual n×n cho p≫n. |
 | `RegressionLinkageLearner._stability_selection(self, X_design: np.ndarray, y: np.ndarray, pair_start: int)` | Refit trên subsamples để tính tần suất edge nonzero. |
 | `RegressionLinkageLearner._baseline_standardized_excess(self, y: np.ndarray, generations: np.ndarray)` | Chuẩn hóa response theo rolling median/MAD theo generation. |
-| `ga_type_to_regression_stage(ga_type: int)` | Map ga_type 2..5 sang stage string. |
+| `ga_type_to_regression_stage(ga_type: int)` | Map ga_type 2..7 sang stage string. |
 | `regression_stage_label(ga_type: int)` | Trả label stage hoặc none. |
 
 ### `blur_ga/results.py`
@@ -746,7 +746,7 @@ Chứa script SLURM:
 | `ResultWriter._write_root(self)` | True nếu artifact_layout ghi root. |
 | `ResultWriter.add(self, row: EvaluatedRun)` | Thêm EvaluatedRun vào writer.rows. |
 | `ResultWriter.write_all(self)` | Ghi root-level aggregate summary/vector/selected_features/generation_trace. |
-| `ResultWriter._run_dir(self, row: EvaluatedRun)` | Tạo path repeat_xx/outer_fold_xx/run_xxx. |
+| `ResultWriter._run_dir(self, row: EvaluatedRun)` | Tạo path repXX/foldXX/runXXX. |
 | `ResultWriter.save_run_artifacts(self, row: EvaluatedRun)` | Ghi per-run summary, selected_features, generation_trace, eVIG, events/snapshots. |
 | `ResultWriter._write_run_summary(self, row: EvaluatedRun, path: Path)` | Ghi một CSV summary cho run. |
 | `ResultWriter._write_run_selected_features(self, row: EvaluatedRun, path: Path)` | Ghi selected features của một run. |
@@ -792,7 +792,7 @@ Chứa script SLURM:
 | `cmd_make_tasks(args: argparse.Namespace)` | Tạo CSV manifest cho SLURM array jobs, mỗi row chứa command_json. |
 | `cmd_run_task(args: argparse.Namespace)` | Đọc một row trong manifest theo task_id rồi chạy command_json. |
 | `_read_one_csv(path: Path)` | Đọc một file CSV thành list[dict]. |
-| `_is_nested_run_summary(path: Path)` | Nhận diện run_summary nằm trong repeat_xx/outer_fold_xx/run_xxx. |
+| `_is_nested_run_summary(path: Path)` | Nhận diện run_summary nằm trong repXX/foldXX/runXXX. |
 | `_method_dir_from_run_summary(path: Path)` | Từ run_summary suy ra thư mục method để aggregate output. |
 | `_prefix_from_summary_name(path: Path)` | Tách prefix dataset_cX_aY từ tên run_summary_..._rZ.csv. |
 | `_chrom_to_bind(chrom: str)` | Chuyển chuỗi chromosome 0101 thành format legacy “0, 1, 0, 1”. |

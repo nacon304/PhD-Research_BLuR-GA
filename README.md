@@ -1,34 +1,69 @@
-# BLuR-GA - NeSI-ready runner
+# BLuR-GA - NeSI/HPC-ready runner
 
-**BLuR-GA: Building-block Linkage using Regression for Genetic Algorithms**.  
-This package was renamed away from the old baseline-specific naming because the regression-linkage stages are a separate idea.
+**BLuR-GA: Building-block Linkage using Regression for Genetic Algorithms**.
+
+This repository currently supports three separated experiment lanes:
+
+1. **Linkage correctness** on synthetic ground-truth linkage datasets via `run_linkage_eval.py`.
+2. **Building-block evaluation** as a future/independent dataset group.
+3. **Performance / real-case feature-selection evaluation** on prepared tabular datasets via `run_blur_ga.py`.
+
+The intended HPC unit is:
+
+```text
+one repeat x one outer fold x one dataset x one method
+```
+
+Per-task runs write nested, race-safe artifacts only. Aggregate summaries are rebuilt after all tasks finish.
 
 ## Main entry points
 
-- `run_blur_ga.py`: unified local/HPC launcher.
-- `run_blur_ga_oop.py`: direct nested-CV runner used internally by the launcher.
-- `blur_ga/`: core implementation package.
-- `analysis_interactive/make_graph_ui.py`: interactive graph viewer.
-- `hpc/job_slurm_blur_ga_task.sh`: preferred SLURM array runner from a task manifest.
-- `hpc/submit_tabarena_manifest.sh`: convenience submitter using a prepared TabArena manifest.
+- `run_blur_ga.py`: local/HPC launcher for supervised feature-selection performance experiments.
+- `run_linkage_eval.py`: local/HPC launcher for linkage-correctness experiments.
+- `run_blur_ga_oop.py`: direct nested-CV runner used internally by `run_blur_ga.py`.
+- `analysis_interactive/make_graph_ui.py`: dependency-light interactive HTML graph viewer.
+- `hpc/job_slurm_blur_ga_task.sh`: SLURM array runner for `run_blur_ga.py` task manifests.
+- `hpc/job_slurm_linkage_eval_task.sh`: SLURM array runner for `run_linkage_eval.py` task manifests.
 
 ## Method folders under `--output-root`
 
-The root-level launcher now writes descriptive method folders instead of `a1`, `a2`, etc.  
-The CSV file names still keep `_a<ga_type>` so existing analysis code that reads file names still works.
+| `ga_type` | Method folder                  | Meaning                                    |
+| --------: | ------------------------------ | ------------------------------------------ |
+| 0 | `standard_ga`                  | Standard GA baseline                       |
+| 1 | `empirical_linkage_legacy`     | Legacy empirical-linkage variant           |
+| 2 | `blur_ga_stage1_pairwise`      | Pairwise-only regression linkage           |
+| 3 | `blur_ga_stage2_main_pairwise` | Main effects + pairwise regression linkage |
+| 4 | `blur_ga_stage3_sparse`        | Sparse ElasticNet/LASSO-style linkage      |
+| 5 | `blur_ga_stage4_sparse_excess` | Sparse linkage with excess-fitness response|
+| 6 | `blur_ga_pairwise_lasso`       | Pairwise Lasso linkage                     |
+| 7 | `blur_ga_main_pairwise_lasso`  | Main-controlled pairwise Lasso linkage     |
 
-| `ga_type` | Method folder                  | Meaning                                                   |
-| --------: | ------------------------------ | --------------------------------------------------------- |
-|         0 | `standard_ga`                  | Standard GA baseline                                      |
-|         1 | `empirical_linkage_legacy`     | Legacy empirical-linkage variant                          |
-|         2 | `blur_ga_stage1_pairwise`      | Pairwise-only regression linkage                          |
-|         3 | `blur_ga_stage2_main_pairwise` | Main effects + pairwise regression linkage                |
-|         4 | `blur_ga_stage3_sparse`        | Sparse ElasticNet/LASSO-style linkage                     |
-|         5 | `blur_ga_stage4_sparse_excess` | Sparse linkage with baseline-standardized excess response |
+## Output layout
 
-## Environment on NeSI
+Nested per-run layout is the default for both launchers:
 
-Use either `requirements_nesi.txt` with pip or `environment_nesi.yml` with conda/mamba.
+```text
+<output-root>/<dataset>/<method>/rep00/fold00/run000/
+<output-root>/linkage/<dataset>/<method>/rep00/fold00/run000/
+```
+
+Per-run files use compact names such as:
+
+```text
+run_summary.csv
+generation_trace.csv
+selected_features.csv
+graph_snapshots.csv
+eVIG.csv
+eVIG_edges.csv
+linkage_eval.csv              # linkage runner only
+predicted_edges.csv           # linkage runner only
+ground_truth_edges_used.csv   # linkage runner only
+```
+
+After all array jobs finish, use aggregate commands to rebuild root summaries.
+
+## Environment
 
 ```bash
 python -m venv .venv_blur_ga
@@ -36,61 +71,71 @@ source .venv_blur_ga/bin/activate
 pip install -r requirements_nesi.txt
 ```
 
-Or:
+Runtime dependencies are intentionally small: `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, and `networkx`.
+
+## Local performance smoke test: one anneal run
+
+Use direct fold mode when you want exactly one repeat x one outer fold x one dataset x one method. `outer_folds` must still be at least 2 because this is a nested-CV experiment.
 
 ```bash
-mamba env create -f environment_nesi.yml
-conda activate blur_ga
-```
-
-Runtime dependencies are minimal: `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, and `networkx`.
-
-## Local smoke test
-
-The included tiny synthetic dataset is only for checking the pipeline.
-
-```bash
-python run_blur_ga.py batch \
-  --data-dir tests/data \
-  --output-root test_outputs/blur_ga_smoke \
-  --datasets synthetic_tiny \
-  --classifiers 1 \
-  --ga-types 2 \
-  --repeats 1 \
+python run_blur_ga.py anneal_task363614 2 2 \
+  --data-dir ../Dataset/prepared_tabarena \
+  --output-dir Results/results_anneal_smoke/anneal_task363614/blur_ga_stage1_pairwise \
   --outer-folds 2 \
   --inner-folds 2 \
-  --popsize 8 \
-  --max-gen 3 \
+  --repeats 1 \
+  --repeat-id 0 \
+  --outer-fold-id 0 \
+  --popsize 20 \
+  --max-gen 5 \
   --lr-gap-gen 1 \
-  --lr-min-samples 4 \
-  --lr-edge-top-k 10 \
+  --lr-min-samples 10 \
   --save-generation-trace true \
   --save-graph-snapshots true \
-  --graph-snapshot-interval 1
+  --graph-snapshot-interval 1 \
+  --artifact-layout nested \
+  --write-aggregate-outputs false
+
+python run_blur_ga.py aggregate --results-root Results/results_anneal_smoke
 ```
 
-Expected output folder:
-
-```text
-test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/
-```
-
-## Graph UI example
+Graph HTML example for the nested run:
 
 ```bash
 python analysis_interactive/make_graph_ui.py \
-  --snapshots test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/graph_snapshots_synthetic_tiny_c1_a2_r0.csv \
-  --trace test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/generation_trace_synthetic_tiny_c1_a2.csv \
-  --selected-features test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/selected_features_synthetic_tiny_c1_a2.csv \
+  --snapshots Results/results_anneal_smoke/anneal_task363614/blur_ga_stage1_pairwise/rep00/fold00/run000/graph_snapshots.csv \
+  --trace Results/results_anneal_smoke/anneal_task363614/blur_ga_stage1_pairwise/rep00/fold00/run000/generation_trace.csv \
+  --selected-features Results/results_anneal_smoke/anneal_task363614/blur_ga_stage1_pairwise/rep00/fold00/run000/selected_features.csv \
   --run-id 0 \
-  --n-nodes 8 \
-  --output test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/graph_evolution_ui.html \
+  --output Results/results_anneal_smoke/anneal_task363614/blur_ga_stage1_pairwise/graph_evolution_ui.html \
   --layout spring
 ```
 
-The UI supports interactive zoom/pan and SVG export from the browser.
+## Local linkage-correctness smoke test
 
-## NeSI manifest workflow
+```bash
+python run_linkage_eval.py \
+  --dataset-root ../Dataset/prepared_linkage_benchmark_mini_debug \
+  --output-root Results/results_linkage_smoke \
+  --datasets pairwise_qubo_d30_e30_posneg_noise0_seed0 \
+  --ga-types 6 7 \
+  --repeat-id 0 \
+  --outer-fold-id 0 \
+  --repeats 1 \
+  --outer-folds 1 \
+  --popsize 20 \
+  --max-gen 5 \
+  --lr-gap-gen 1 \
+  --lr-min-samples 10 \
+  --include-baselines true \
+  --k-values 10 30
+
+python run_linkage_eval.py aggregate --results-root Results/results_linkage_smoke
+```
+
+`linkage_eval.csv` now always contains an `all_returned` row by default. Requested `--k-values` add separate `top_k` rows. This avoids forcing a fixed `k` when a sparse method returns fewer edges.
+
+## HPC workflow: performance / real-case datasets
 
 ```bash
 python run_blur_ga.py make-tasks \
@@ -106,34 +151,36 @@ python run_blur_ga.py make-tasks \
   --tasks-out tasks_tabarena.csv
 
 sbatch --array=0-<N-1> hpc/job_slurm_blur_ga_task.sh tasks_tabarena.csv
-
 python run_blur_ga.py aggregate --results-root results_nesi
 ```
 
-For array jobs, `make-tasks` automatically switches to nested, race-safe output:
+## HPC workflow: linkage correctness
 
-```text
-repeat_xx/outer_fold_xx/run_xxx/
+```bash
+python run_linkage_eval.py make-tasks \
+  --dataset-root ../Dataset/prepared_linkage_benchmark \
+  --output-root results_linkage \
+  --datasets all \
+  --ga-types 1 2 3 6 7 \
+  --repeats 10 \
+  --outer-folds 1 \
+  --popsize 100 \
+  --max-gen 200 \
+  --lr-gap-gen 1 \
+  --lr-min-samples 10 \
+  --include-baselines true \
+  --k-values 50 150 \
+  --tasks-out tasks_linkage.csv
+
+sbatch --array=0-<N-1> hpc/job_slurm_linkage_eval_task.sh tasks_linkage.csv
+python run_linkage_eval.py aggregate --results-root results_linkage
 ```
 
-Then `aggregate` rebuilds root-level summary/vector files after all jobs finish.
+## Linkage metric interpretation
 
-## Output files to keep for later analysis
+`linkage_eval.csv` has two evaluation scopes:
 
-Important root-level files:
+- `eval_scope=all_returned`: evaluates every edge returned by the method. This is the default sparse-graph correctness score.
+- `eval_scope=top_k`: evaluates requested top-k prefixes. If a method returns fewer than `k` edges, `n_eval_edges` shows how many were actually available. `precision` is computed over returned/evaluated edges, while `precision_strict` is computed over the requested/effective `k`.
 
-- `nested_summary_*.csv`
-- `run_summary_*_r*.csv`
-- `generation_trace_*.csv` and `generation_trace_*_r*.csv`
-- `selected_features_*.csv` and `selected_features_*_r*.csv`
-- `graph_snapshots_*_r*.csv`
-- `eVIG_*_r*.csv`, `eVIG_edges_*_r*.csv`, `eVIG_coefficients_*_r*.csv`
-- legacy vectors: `bfi_*.csv`, `test_score_*.csv`, `time_*.csv`, `gen_*.csv`, `evals_*.csv`, `nedges_*.csv`, `bind_*.csv`
-
-## Verified smoke outputs in this package
-
-This zip includes generated smoke outputs under `test_outputs/`:
-
-- `test_outputs/blur_ga_smoke/synthetic_tiny/blur_ga_stage1_pairwise/`: batch run for `ga_type=2`, including graph snapshots and `graph_evolution_ui.html`.
-- `test_outputs/blur_ga_tasks/synthetic_tiny/blur_ga_stage1_pairwise/`: manifest/task-style run plus aggregate output.
-- `test_outputs/blur_ga_smoke_emp/`: direct positional run for the legacy empirical-linkage variant, `ga_type=1`.
+This gives both sparse-quality and rank-at-k views without mixing their meanings.

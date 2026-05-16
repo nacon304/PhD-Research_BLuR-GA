@@ -611,3 +611,23 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# python run_linkage_eval.py `
+#   --dataset-root ../Dataset/prepared_linkage_benchmark_mini_debug `
+#   --output-root Results/results_linkage_test `
+#   --datasets all `
+#   --ga-types 1 6 7 `
+#   --repeat-id 0 `
+#   --outer-fold-id 0 `
+#   --popsize 100 `
+#   --max-gen 200 `
+#   --lr-gap-gen 1 `
+#   --lr-min-samples 10 `
+#   --save-generation-trace true `
+#   --save-graph-snapshots true `
+#   --graph-snapshot-interval 1 `
+#   --include-baselines true `
+#   --k-values 100
+
+# python run_linkage_eval.py aggregate `
+#   --results-root Results/results_linkage_test

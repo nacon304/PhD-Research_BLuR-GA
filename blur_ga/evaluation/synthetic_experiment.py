@@ -42,11 +42,12 @@ def run_synthetic_landscape(
     repeat_id: int = 0,
     outer_fold: int = 0,
     base_seed: int = 1,
+    n_outer_folds: int = 1,
 ) -> SyntheticLandscapeRun:
     problem = load_problem(problem_json)
     evaluator = SyntheticLandscapeEvaluator(problem)
     seed = int(base_seed) + 100000 * int(repeat_id) + 1000 * int(outer_fold)
-    run_id = int(repeat_id) * 1 + int(outer_fold)
+    run_id = int(repeat_id) * max(1, int(n_outer_folds)) + int(outer_fold)
     selector = GeneticFeatureSelector(ga_config, evaluator, seed=seed, run_id=run_id)
     result = selector.run()
     return SyntheticLandscapeRun(
