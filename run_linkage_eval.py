@@ -252,7 +252,40 @@ def aggregate_linkage_results(output_root: str | Path) -> tuple[Path, Path] | No
     files = _linkage_eval_files(output_root)
     if not files:
         return None
-    frames = [pd.read_csv(p) for p in files]
+
+    frames: list[pd.DataFrame] = []
+    skipped_rows: list[dict[str, object]] = []
+    for p in files:
+        reason = ""
+        if p.stat().st_size == 0:
+            reason = "empty_0_bytes"
+        else:
+            try:
+                frame = pd.read_csv(p)
+            except pd.errors.EmptyDataError:
+                reason = "empty_data_error"
+            else:
+                if frame.empty:
+                    reason = "empty_dataframe"
+                else:
+                    frames.append(frame)
+                    continue
+
+        skipped_rows.append({
+            "file": str(p.relative_to(output_root)),
+            "size_bytes": int(p.stat().st_size),
+            "reason": reason,
+        })
+
+    if skipped_rows:
+        skipped_path = output_root / "empty_linkage_eval_files.csv"
+        pd.DataFrame(skipped_rows).to_csv(skipped_path, index=False)
+        print(f"Warning: skipped {len(skipped_rows)} empty linkage-eval CSV file(s).")
+        print(f"Diagnostic file: {skipped_path}")
+
+    if not frames:
+        raise ValueError(f"Found {len(files)} linkage_eval*.csv file(s), but none contained parsable rows.")
+
     df = pd.concat(frames, ignore_index=True)
     out = output_root / "linkage_eval_summary.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -614,7 +647,7 @@ if __name__ == "__main__":
 
 # python run_linkage_eval.py `
 #   --dataset-root ../Dataset/prepared_linkage_benchmark_mini_debug `
-#   --output-root Results/results_linkage_test `
+#   --output-root ../Results/results_linkage_test `
 #   --datasets all `
 #   --ga-types 1 6 7 `
 #   --repeat-id 0 `
@@ -630,11 +663,11 @@ if __name__ == "__main__":
 #   --k-values 100
 
 # python run_linkage_eval.py aggregate `
-#   --results-root Results/results_linkage_test
+#   --results-root ../Results/results_linkage_test
 
-# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
-# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"
-# $RUN = "Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/empirical_linkage_legacy/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/empirical_linkage_legacy/rep00/fold00/run000"
 
 # python analysis_interactive/make_graph_ui.py `
 #   --snapshots "$RUN/graph_snapshots.csv" `
