@@ -133,6 +133,12 @@ def build_ga_config(args: argparse.Namespace, ga_type: int) -> GAConfig:
         lr_min_samples=args.lr_min_samples,
         lr_ridge_alpha=args.lr_ridge_alpha,
         lr_sparse_alpha=args.lr_sparse_alpha,
+        lr_auto_alpha=args.lr_auto_alpha,
+        lr_alpha_c=args.lr_alpha_c,
+        lr_delta=args.lr_delta,
+        lr_auto_min_samples=args.lr_auto_min_samples,
+        lr_expected_edges=args.lr_expected_edges,
+        lr_min_samples_c=args.lr_min_samples_c,
         lr_l1_ratio=args.lr_l1_ratio,
         lr_stability_subsamples=args.lr_stability_subsamples,
         lr_stability_fraction=args.lr_stability_fraction,
@@ -252,40 +258,7 @@ def aggregate_linkage_results(output_root: str | Path) -> tuple[Path, Path] | No
     files = _linkage_eval_files(output_root)
     if not files:
         return None
-
-    frames: list[pd.DataFrame] = []
-    skipped_rows: list[dict[str, object]] = []
-    for p in files:
-        reason = ""
-        if p.stat().st_size == 0:
-            reason = "empty_0_bytes"
-        else:
-            try:
-                frame = pd.read_csv(p)
-            except pd.errors.EmptyDataError:
-                reason = "empty_data_error"
-            else:
-                if frame.empty:
-                    reason = "empty_dataframe"
-                else:
-                    frames.append(frame)
-                    continue
-
-        skipped_rows.append({
-            "file": str(p.relative_to(output_root)),
-            "size_bytes": int(p.stat().st_size),
-            "reason": reason,
-        })
-
-    if skipped_rows:
-        skipped_path = output_root / "empty_linkage_eval_files.csv"
-        pd.DataFrame(skipped_rows).to_csv(skipped_path, index=False)
-        print(f"Warning: skipped {len(skipped_rows)} empty linkage-eval CSV file(s).")
-        print(f"Diagnostic file: {skipped_path}")
-
-    if not frames:
-        raise ValueError(f"Found {len(files)} linkage_eval*.csv file(s), but none contained parsable rows.")
-
+    frames = [pd.read_csv(p) for p in files]
     df = pd.concat(frames, ignore_index=True)
     out = output_root / "linkage_eval_summary.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -447,6 +420,12 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-min-samples", type=int, default=20)
     p.add_argument("--lr-ridge-alpha", type=float, default=1e-6)
     p.add_argument("--lr-sparse-alpha", type=float, default=0.001)
+    p.add_argument("--lr-auto-alpha", type=str2bool, default=True)
+    p.add_argument("--lr-alpha-c", type=float, default=1.0)
+    p.add_argument("--lr-delta", type=float, default=0.05)
+    p.add_argument("--lr-auto-min-samples", type=str2bool, default=True)
+    p.add_argument("--lr-expected-edges", type=int, default=None)
+    p.add_argument("--lr-min-samples-c", type=float, default=1.0)
     p.add_argument("--lr-l1-ratio", type=float, default=0.95)
     p.add_argument("--lr-stability-subsamples", type=int, default=0)
     p.add_argument("--lr-stability-fraction", type=float, default=0.75)
@@ -520,6 +499,11 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         "--lr-min-samples", str(args.lr_min_samples),
         "--lr-ridge-alpha", str(args.lr_ridge_alpha),
         "--lr-sparse-alpha", str(args.lr_sparse_alpha),
+        "--lr-auto-alpha", str(bool(args.lr_auto_alpha)).lower(),
+        "--lr-alpha-c", str(args.lr_alpha_c),
+        "--lr-delta", str(args.lr_delta),
+        "--lr-auto-min-samples", str(bool(args.lr_auto_min_samples)).lower(),
+        "--lr-min-samples-c", str(args.lr_min_samples_c),
         "--lr-l1-ratio", str(args.lr_l1_ratio),
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
@@ -535,6 +519,7 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         ("--max-evals", args.max_evals),
         ("--graph-snapshot-top-k", args.graph_snapshot_top_k),
         ("--lr-edge-top-k", args.lr_edge_top_k),
+        ("--lr-expected-edges", args.lr_expected_edges),
     ]
     for flag, value in optional_pairs:
         if value is None:
@@ -647,7 +632,7 @@ if __name__ == "__main__":
 
 # python run_linkage_eval.py `
 #   --dataset-root ../Dataset/prepared_linkage_benchmark_mini_debug `
-#   --output-root ../Results/results_linkage_test `
+#   --output-root ../Results/results_linkage_test_theory_v3 `
 #   --datasets all `
 #   --ga-types 1 6 7 `
 #   --repeat-id 0 `
@@ -656,6 +641,12 @@ if __name__ == "__main__":
 #   --max-gen 200 `
 #   --lr-gap-gen 1 `
 #   --lr-min-samples 10 `
+#   --lr-auto-alpha true `
+#   --lr-alpha-c 0.2 `
+#   --lr-delta 0.05 `
+#   --lr-auto-min-samples true `
+#   --lr-expected-edges 20 `
+#   --lr-min-samples-c 2.0 `
 #   --save-generation-trace true `
 #   --save-graph-snapshots true `
 #   --graph-snapshot-interval 1 `
@@ -663,11 +654,11 @@ if __name__ == "__main__":
 #   --k-values 100
 
 # python run_linkage_eval.py aggregate `
-#   --results-root ../Results/results_linkage_test
+#   --results-root ../Results/results_linkage_test_theory_v3
 
-# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
-# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"
-# $RUN = "../Results/results_linkage_test/linkage/maxsat_d35_m90_k3_weighted_seed0/empirical_linkage_legacy/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test_theory_v3/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test_theory_v3/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"
+# $RUN = "../Results/results_linkage_test_theory_v3/linkage/maxsat_d35_m90_k3_weighted_seed0/empirical_linkage_legacy/rep00/fold00/run000"
 
 # python analysis_interactive/make_graph_ui.py `
 #   --snapshots "$RUN/graph_snapshots.csv" `

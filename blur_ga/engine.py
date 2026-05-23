@@ -76,6 +76,7 @@ class GeneticFeatureSelector:
         self._archive_chromosomes: list[np.ndarray] = []
         self._archive_fitness: list[float] = []
         self._archive_generations: list[int] = []
+        self._last_lr_archive_size = 0
         self._regression_stage = ga_type_to_regression_stage(config.ga_type)
         self._lr_learner: RegressionLinkageLearner | None = None
         if self._regression_stage is not None:
@@ -84,6 +85,9 @@ class GeneticFeatureSelector:
                 stage=self._regression_stage,
                 ridge_alpha=config.lr_ridge_alpha,
                 sparse_alpha=config.lr_sparse_alpha,
+                auto_alpha=config.lr_auto_alpha,
+                alpha_c=config.lr_alpha_c,
+                delta=config.lr_delta,
                 l1_ratio=config.lr_l1_ratio,
                 stability_subsamples=config.lr_stability_subsamples,
                 stability_fraction=config.lr_stability_fraction,
@@ -142,7 +146,7 @@ class GeneticFeatureSelector:
                 break
 
         if self._regression_stage is not None and isinstance(evig, RegressionVIG):
-            self._fit_regression_graph(evig, generation)
+            self._fit_regression_graph(evig, generation, force=True)
             if self.config.save_graph_snapshots:
                 self.graph_snapshots = [
                     item for item in self.graph_snapshots if int(item.get("generation", -1)) != generation
@@ -178,20 +182,49 @@ class GeneticFeatureSelector:
             self._archive_generations.append(int(self._current_generation))
         return fitness
 
-    def _fit_regression_graph(self, evig: RegressionVIG, generation: int) -> None:
+    def _effective_lr_min_samples(self) -> int:
+        """Return the archive-size threshold used before fitting regression linkage.
+
+        For ga_type 6/7, this implements the PSLE/MPSLE scaling
+        n_min = ceil(c_n * s_hat * log(2 p_g / delta)), while keeping
+        lr_min_samples as a user-specified lower bound for backward compatibility.
+        Older regression stages keep the original fixed lr_min_samples behavior.
+        """
+        base = int(self.config.lr_min_samples)
+        if not self.config.lr_auto_min_samples:
+            return base
+        if self._regression_stage not in {"pairwise_lasso", "main_pairwise_lasso"}:
+            return base
+        p_cols = max(1, self.n_features * (self.n_features - 1) // 2)
+        s_hat = int(self.config.lr_expected_edges) if self.config.lr_expected_edges is not None else 1
+        s_hat = max(1, min(s_hat, p_cols))
+        delta = min(max(float(self.config.lr_delta), 1e-12), 1.0 - 1e-12)
+        theory_min = int(np.ceil(float(self.config.lr_min_samples_c) * s_hat * np.log((2.0 * p_cols) / delta)))
+        return max(2, base, theory_min)
+
+    def _fit_regression_graph(self, evig: RegressionVIG, generation: int, force: bool = False) -> None:
         if self._lr_learner is None:
             return
-        if len(self._archive_chromosomes) < self.config.lr_min_samples:
+
+        archive_size = len(self._archive_chromosomes)
+        if archive_size - self._last_lr_archive_size < self._effective_lr_min_samples() and not force:
             return
+        if archive_size == self._last_lr_archive_size:
+            return
+
         X_archive = np.vstack(self._archive_chromosomes).astype(np.int8, copy=False)
         y_archive = np.asarray(self._archive_fitness, dtype=float)
         gen_archive = np.asarray(self._archive_generations, dtype=int)
+
         fit = self._lr_learner.fit(X_archive, y_archive, gen_archive, generation=generation)
+
         evig.update_from_fit(
             fit,
             min_abs_weight=self.config.lr_edge_min_weight,
             top_k=self.config.lr_edge_top_k,
         )
+
+        self._last_lr_archive_size = archive_size
 
     def _make_generation_trace_row(
         self,

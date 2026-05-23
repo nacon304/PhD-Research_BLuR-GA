@@ -505,6 +505,9 @@ class RegressionLinkageLearner:
         stage: RegressionStage,
         ridge_alpha: float = 1e-6,
         sparse_alpha: float = 0.001,
+        auto_alpha: bool = True,
+        alpha_c: float = 1.0,
+        delta: float = 0.05,
         l1_ratio: float = 0.95,
         stability_subsamples: int = 0,
         stability_fraction: float = 0.75,
@@ -515,6 +518,9 @@ class RegressionLinkageLearner:
         self.stage = stage
         self.ridge_alpha = float(ridge_alpha)
         self.sparse_alpha = float(sparse_alpha)
+        self.auto_alpha = bool(auto_alpha)
+        self.alpha_c = float(alpha_c)
+        self.delta = float(delta)
         self.l1_ratio = float(l1_ratio)
         self.stability_subsamples = int(stability_subsamples)
         self.stability_fraction = float(stability_fraction)
@@ -569,6 +575,47 @@ class RegressionLinkageLearner:
             )
         raise ValueError(f"Unknown regression linkage stage: {self.stage!r}")
 
+    @property
+    def use_theory_alpha(self) -> bool:
+        # Only the theory-aligned Lasso stages use the PSLE/MPSLE lambda rule.
+        # Older sparse ElasticNet stages keep their original manual alpha.
+        return self.stage in {"pairwise_lasso", "main_pairwise_lasso"} and self.auto_alpha
+
+    def theory_alpha(self, y_reg: np.ndarray, *, n_samples: int | None = None, p_columns: int | None = None) -> float:
+        """Return lambda_g = c_lambda sigma_hat sqrt(2 log(2 p_g / delta) / n_g).
+
+        This is the implementation counterpart of the PSLE noise-score corollary.
+        If auto-alpha is disabled or the stage is not theory-aligned Lasso, the
+        user-provided sparse_alpha is returned unchanged.
+        """
+        if not self.use_theory_alpha:
+            return float(self.sparse_alpha)
+        y_arr = np.asarray(y_reg, dtype=np.float64).reshape(-1)
+        n = int(n_samples if n_samples is not None else y_arr.size)
+        p = int(p_columns if p_columns is not None else len(self.pairs))
+        if n < 2 or p < 1:
+            return float(self.sparse_alpha)
+        sigma_hat = float(np.std(y_arr, ddof=1))
+        if not np.isfinite(sigma_hat):
+            sigma_hat = 0.0
+        # When the response is constant, any Lasso fit is uninformative.  Keeping
+        # lambda at zero avoids inventing a large penalty from numerical noise.
+        if sigma_hat <= 1e-12:
+            return 0.0
+        delta = min(max(float(self.delta), 1e-12), 1.0 - 1e-12)
+        log_term = max(0.0, float(np.log((2.0 * max(1, p)) / delta)))
+        return float(self.alpha_c) * sigma_hat * float(np.sqrt((2.0 * log_term) / float(n)))
+
+    def _fit_with_current_alpha(self, X_bits: np.ndarray, y_reg: np.ndarray, *, alpha: float) -> np.ndarray:
+        old_alpha = getattr(self._estimator, "alpha", None)
+        if old_alpha is not None:
+            setattr(self._estimator, "alpha", float(alpha))
+        try:
+            return self._estimator.fit(X_bits, y_reg)
+        finally:
+            if old_alpha is not None:
+                setattr(self._estimator, "alpha", old_alpha)
+
     def fit(self, chromosomes: np.ndarray, fitness: np.ndarray, generations: np.ndarray, *, generation: int) -> RegressionLinkageFit:
         X_bits = np.asarray(chromosomes, dtype=np.float64)
         y = np.asarray(fitness, dtype=np.float64)
@@ -582,7 +629,8 @@ class RegressionLinkageLearner:
             return RegressionLinkageFit(generation, len(X_bits), self.pairs, zeros, zeros, zeros, zeros.astype(int))
 
         y_reg = self._response.transform(y, gens)
-        pair_coef = self._estimator.fit(X_bits, y_reg)
+        alpha_g = self.theory_alpha(y_reg, n_samples=len(X_bits), p_columns=len(self.pairs))
+        pair_coef = self._fit_with_current_alpha(X_bits, y_reg, alpha=alpha_g)
         pair_coef = np.nan_to_num(pair_coef, nan=0.0, posinf=0.0, neginf=0.0)
 
         stability = np.ones_like(pair_coef, dtype=float)
@@ -607,7 +655,9 @@ class RegressionLinkageLearner:
         counts = np.zeros(len(self.pairs), dtype=int)
         for _ in range(self.stability_subsamples):
             idx = self._rng.choice(n, size=m, replace=False)
-            coef = self._estimator.fit(X_bits[idx], y[idx])
+            y_sub = y[idx]
+            alpha_sub = self.theory_alpha(y_sub, n_samples=m, p_columns=len(self.pairs))
+            coef = self._fit_with_current_alpha(X_bits[idx], y_sub, alpha=alpha_sub)
             counts += (np.abs(coef) > 1e-12).astype(int)
         stability = counts.astype(float) / max(1, self.stability_subsamples)
         return stability, counts

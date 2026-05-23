@@ -89,19 +89,41 @@ def safe_read_csv(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
 # ---------------------------------------------------------------------
 
 def infer_family(dataset: str) -> str:
-    """Map dataset names to compact benchmark-family labels."""
-    if dataset.startswith("ising_spin_glass_grid6x6"):
-        return "Ising 6x6"
-    if dataset.startswith("ising_spin_glass_grid10x10"):
-        return "Ising 10x10"
-    if dataset.startswith("maxsat_d50"):
-        return "MaxSAT d50"
-    if dataset.startswith("maxsat_d100"):
-        return "MaxSAT d100"
-    if dataset.startswith("nk_landscape_d50"):
-        return "NK d50 k3"
-    if dataset.startswith("nk_landscape_d80"):
-        return "NK d80 k5"
+    """Infer a benchmark-family label from the dataset/file name.
+
+    The previous version hard-coded only a few large benchmark names, so
+    debug datasets such as ``ising_spin_glass_grid5x5_*``,
+    ``maxsat_d35_*``, ``nk_landscape_d30_*``, and
+    ``pairwise_qubo_d30_*`` were all plotted as ``Other``.
+    This parser reads the family directly from the filename pattern and also
+    keeps the most important size parameters in the label.
+    """
+    name = str(dataset)
+
+    m = re.match(r"ising_spin_glass_grid(\d+)x(\d+)", name)
+    if m:
+        return f"Ising {m.group(1)}x{m.group(2)}"
+
+    m = re.match(r"maxsat_d(\d+)_m(\d+)_k(\d+)", name)
+    if m:
+        return f"MaxSAT d{m.group(1)} m{m.group(2)} k{m.group(3)}"
+
+    m = re.match(r"nk_landscape_d(\d+)_k(\d+)", name)
+    if m:
+        return f"NK d{m.group(1)} k{m.group(2)}"
+
+    m = re.match(r"pairwise_qubo_d(\d+)_e(\d+)", name)
+    if m:
+        return f"QUBO d{m.group(1)} e{m.group(2)}"
+
+    m = re.match(r"planted_xor_d(\d+)_n(\d+)_g([^_]+)", name)
+    if m:
+        return f"Planted XOR d{m.group(1)} g{m.group(3)}"
+
+    m = re.match(r"gametes_style_d(\d+)_n(\d+)_loci(\d+)", name)
+    if m:
+        return f"GAMETES d{m.group(1)} loci{m.group(3)}"
+
     return "Other"
 
 
@@ -189,6 +211,13 @@ def write_analysis_tables(summary: pd.DataFrame, by_method: pd.DataFrame, outdir
 
     methods = ordered_methods(by_method["method"].unique())
     datasets = sorted(by_method["dataset"].unique())
+
+    dataset_family = (
+        by_method[["dataset", "family", "dataset_short"]]
+        .drop_duplicates()
+        .sort_values(["family", "dataset"])
+    )
+    dataset_family.to_csv(outdir / "dataset_family_mapping.csv", index=False)
 
     # Missing dataset-method combinations are important when some runs failed.
     missing_rows = []
@@ -532,6 +561,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # python analysis_interactive/analyze_linkage_correctness/plot_linkage_all_returned_analysis.py `
-#   --summary "..\Results\results_linkage_test\linkage_eval_summary.csv" `
-#   --by-method "..\Results\results_linkage_test\linkage_eval_by_method.csv" `
-#   --outdir "..\Results\results_linkage_test\linkage_figures_all_returned"
+#   --summary "..\Results\results_linkage_test_theory_v3\linkage_eval_summary.csv" `
+#   --by-method "..\Results\results_linkage_test_theory_v3\linkage_eval_by_method.csv" `
+#   --outdir "..\Results\results_linkage_test_theory_v3\linkage_figures_all_returned"

@@ -67,6 +67,17 @@ class GAConfig:
     lr_min_samples: int = 20
     lr_ridge_alpha: float = 1e-6
     lr_sparse_alpha: float = 0.001
+    # Theory-guided PSLE/MPSLE settings for ga_type 6/7.
+    # If enabled, lambda_g is computed at each regression fit as
+    # c_lambda * sigma_hat_g * sqrt(2 log(2 p_g / delta) / n_g).
+    # If enabled, the minimum archive size is at least
+    # ceil(c_n * s_hat * log(2 p_g / delta)).
+    lr_auto_alpha: bool = True
+    lr_alpha_c: float = 1.0
+    lr_delta: float = 0.05
+    lr_auto_min_samples: bool = True
+    lr_expected_edges: int | None = None
+    lr_min_samples_c: float = 1.0
     lr_l1_ratio: float = 0.95
     lr_stability_subsamples: int = 0
     lr_stability_fraction: float = 0.75
@@ -105,6 +116,14 @@ class GAConfig:
             raise ValueError("lr_ridge_alpha must be non-negative.")
         if self.lr_sparse_alpha < 0:
             raise ValueError("lr_sparse_alpha must be non-negative.")
+        if self.lr_alpha_c < 0:
+            raise ValueError("lr_alpha_c must be non-negative.")
+        if not 0.0 < self.lr_delta < 1.0:
+            raise ValueError("lr_delta must be in (0, 1).")
+        if self.lr_expected_edges is not None and self.lr_expected_edges < 1:
+            raise ValueError("lr_expected_edges must be positive or None.")
+        if self.lr_min_samples_c <= 0:
+            raise ValueError("lr_min_samples_c must be positive.")
         if not 0.0 < self.lr_l1_ratio <= 1.0:
             raise ValueError("lr_l1_ratio must be in (0, 1].")
         if self.lr_stability_subsamples < 0:

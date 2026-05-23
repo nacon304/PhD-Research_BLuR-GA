@@ -198,6 +198,12 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_min_samples": 20,
         "lr_ridge_alpha": 1e-6,
         "lr_sparse_alpha": 0.001,
+        "lr_auto_alpha": True,
+        "lr_alpha_c": 1.0,
+        "lr_delta": 0.05,
+        "lr_auto_min_samples": True,
+        "lr_expected_edges": None,
+        "lr_min_samples_c": 1.0,
         "lr_l1_ratio": 0.95,
         "lr_stability_subsamples": 0,
         "lr_stability_fraction": 0.75,
@@ -261,6 +267,11 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-min-samples", str(args.lr_min_samples),
         "--lr-ridge-alpha", str(args.lr_ridge_alpha),
         "--lr-sparse-alpha", str(args.lr_sparse_alpha),
+        "--lr-auto-alpha", str(bool(args.lr_auto_alpha)).lower(),
+        "--lr-alpha-c", str(args.lr_alpha_c),
+        "--lr-delta", str(args.lr_delta),
+        "--lr-auto-min-samples", str(bool(args.lr_auto_min_samples)).lower(),
+        "--lr-min-samples-c", str(args.lr_min_samples_c),
         "--lr-l1-ratio", str(args.lr_l1_ratio),
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
@@ -276,6 +287,7 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         ("--max-evals", args.max_evals),
         ("--graph-snapshot-top-k", args.graph_snapshot_top_k),
         ("--lr-edge-top-k", args.lr_edge_top_k),
+        ("--lr-expected-edges", args.lr_expected_edges),
     ]
     for flag, value in optional_pairs:
         if value is not None:
@@ -332,6 +344,12 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-min-samples", type=int, default=None)
     p.add_argument("--lr-ridge-alpha", type=float, default=None)
     p.add_argument("--lr-sparse-alpha", type=float, default=None)
+    p.add_argument("--lr-auto-alpha", type=str2bool, default=None)
+    p.add_argument("--lr-alpha-c", type=float, default=None)
+    p.add_argument("--lr-delta", type=float, default=None)
+    p.add_argument("--lr-auto-min-samples", type=str2bool, default=None)
+    p.add_argument("--lr-expected-edges", type=int, default=None)
+    p.add_argument("--lr-min-samples-c", type=float, default=None)
     p.add_argument("--lr-l1-ratio", type=float, default=None)
     p.add_argument("--lr-stability-subsamples", type=int, default=None)
     p.add_argument("--lr-stability-fraction", type=float, default=None)
@@ -603,41 +621,53 @@ if __name__ == "__main__":
 # python run_blur_ga.py batch `
 #   --preset analysis `
 #   --data-dir ../Dataset/prepared_tabarena `
-#   --output-root ../Results/results_analysis_test `
+#   --output-root ../Results/results_analysis_test_v2 `
 #   --datasets anneal_task363614 `
 #   --classifiers 2 `
-#   --ga-types 1 6 7
+#   --ga-types 1 6 7 `
+#   --repeat 1 `
+#   --inner-folds 2 `
+#   --outer-folds 2 `
+#   --lr-gap-gen 1 `
+#   --lr-min-samples 10 `
+#   --lr-auto-alpha true `
+#   --lr-alpha-c 0.2 `
+#   --lr-delta 0.05 `
+#   --lr-auto-min-samples true `
+#   --lr-expected-edges 50 `
+#   --lr-min-samples-c 2.0 `
+#   --save-generation-trace true `
+#   --save-graph-snapshots true `
+#   --graph-snapshot-interval 1
 
-# python run_blur_ga.py aggregate --results-root ../Results/results_analysis_test
+# python run_blur_ga.py aggregate --results-root ../Results/results_analysis_test_v2
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace ../Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
-#   --selected-features ../Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
+#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
 #   --run-id 0 `
-#   --output ../Results/results_analysis_test/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
+#   --output ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
 #   --initial-spacing 1.25 `
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace ../Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a6.csv `
-#   --selected-features ../Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a6.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a6.csv `
+#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a6.csv `
 #   --run-id 0 `
-#   --output ../Results/results_analysis_test/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
+#   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
 #   --initial-spacing 1.25 `
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace ../Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a7.csv `
-#   --selected-features ../Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a7.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a7.csv `
+#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a7.csv `
 #   --run-id 0 `
-#   --output ../Results/results_analysis_test/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
+#   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
 #   --initial-spacing 1.25 `
 #   --layout spring
-
-# 556 557

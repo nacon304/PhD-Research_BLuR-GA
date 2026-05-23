@@ -66,7 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-gap-gen", type=int, default=5, help="Fit/update the LR linkage graph every N generations")
     parser.add_argument("--lr-min-samples", type=int, default=20, help="Minimum unique evaluated solutions before fitting LR linkage")
     parser.add_argument("--lr-ridge-alpha", type=float, default=1e-6, help="Small ridge penalty for ga_type 2/3; use 0 for pure OLS-like fitting")
-    parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="ElasticNet/LASSO alpha for ga_type 4/5")
+    parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="Manual ElasticNet/Lasso alpha; used directly for ga_type 4/5 and as fallback for ga_type 6/7 when --lr-auto-alpha=false")
+    parser.add_argument("--lr-auto-alpha", type=str2bool, default=True, help="For ga_type 6/7, compute lambda_g = c_lambda*sigma_hat*sqrt(2 log(2p/delta)/n) at each fit")
+    parser.add_argument("--lr-alpha-c", type=float, default=1.0, help="c_lambda multiplier for theory-guided ga_type 6/7 Lasso penalty")
+    parser.add_argument("--lr-delta", type=float, default=0.05, help="Failure probability delta used by theory-guided lambda and n_min rules")
+    parser.add_argument("--lr-auto-min-samples", type=str2bool, default=True, help="For ga_type 6/7, require at least ceil(c_n*s_hat*log(2p/delta)) archive samples before refitting")
+    parser.add_argument("--lr-expected-edges", type=int, default=None, help="s_hat: expected number of relevant linkage edges for the PSLE archive-size rule; default 1")
+    parser.add_argument("--lr-min-samples-c", type=float, default=1.0, help="c_n multiplier for the theory-guided ga_type 6/7 minimum archive-size rule")
     parser.add_argument("--lr-l1-ratio", type=float, default=0.95, help="ElasticNet L1 ratio for ga_type 4/5; ga_type 6/7 use pure Lasso and ignore this option")
     parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in sparse/Lasso ga_type 4/5/6/7")
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
@@ -107,6 +113,12 @@ def main(argv: list[str] | None = None) -> None:
         lr_min_samples=args.lr_min_samples,
         lr_ridge_alpha=args.lr_ridge_alpha,
         lr_sparse_alpha=args.lr_sparse_alpha,
+        lr_auto_alpha=args.lr_auto_alpha,
+        lr_alpha_c=args.lr_alpha_c,
+        lr_delta=args.lr_delta,
+        lr_auto_min_samples=args.lr_auto_min_samples,
+        lr_expected_edges=args.lr_expected_edges,
+        lr_min_samples_c=args.lr_min_samples_c,
         lr_l1_ratio=args.lr_l1_ratio,
         lr_stability_subsamples=args.lr_stability_subsamples,
         lr_stability_fraction=args.lr_stability_fraction,
@@ -128,7 +140,11 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Dataset: {dataset.name} | samples={dataset.n_samples} | features={dataset.n_features}")
     print(f"GA type: {ga_cfg.ga_type} | classifier: KNN-{ga_cfg.knn_k}")
     if ga_cfg.ga_type in {2, 3, 4, 5, 6, 7}:
-        print(f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, edge_top_k={ga_cfg.lr_edge_top_k}")
+        print(
+            f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
+            f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
+            f"delta={ga_cfg.lr_delta}, edge_top_k={ga_cfg.lr_edge_top_k}"
+        )
     print(f"Nested CV: outer={exp_cfg.outer_folds}, inner={exp_cfg.inner_folds}, repeats={exp_cfg.repeats}")
     print(f"Output: artifact_layout={exp_cfg.artifact_layout}, aggregate_outputs={exp_cfg.write_aggregate_outputs}")
     if args.outer_fold_id is not None:

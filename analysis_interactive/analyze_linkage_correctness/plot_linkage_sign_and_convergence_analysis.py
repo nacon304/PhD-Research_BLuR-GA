@@ -58,30 +58,52 @@ DEFAULT_SIGNED_METHODS = [
     "blur_ga_pairwise_lasso",
 ]
 
-FAMILY_ORDER = [
-    "Ising 6x6",
-    "Ising 10x10",
-    "MaxSAT d50",
-    "MaxSAT d100",
-    "NK d50 k3",
-    "NK d80 k5",
+FAMILY_PREFIX_ORDER = [
+    "Ising",
+    "MaxSAT",
+    "NK",
+    "QUBO",
+    "Planted XOR",
+    "GAMETES",
     "Other",
 ]
 
 
 def infer_family(dataset: str) -> str:
-    if dataset.startswith("ising_spin_glass_grid6x6"):
-        return "Ising 6x6"
-    if dataset.startswith("ising_spin_glass_grid10x10"):
-        return "Ising 10x10"
-    if dataset.startswith("maxsat_d50"):
-        return "MaxSAT d50"
-    if dataset.startswith("maxsat_d100"):
-        return "MaxSAT d100"
-    if dataset.startswith("nk_landscape_d50"):
-        return "NK d50 k3"
-    if dataset.startswith("nk_landscape_d80"):
-        return "NK d80 k5"
+    """Infer a benchmark-family label from the dataset/file name.
+
+    This reads the family and size parameters from filenames such as
+    ``ising_spin_glass_grid5x5_posneg_seed0``,
+    ``maxsat_d35_m90_k3_weighted_seed0``,
+    ``nk_landscape_d30_k3_random_seed0``, and
+    ``pairwise_qubo_d30_e30_posneg_noise0_seed0``.
+    """
+    name = str(dataset)
+
+    m = re.match(r"ising_spin_glass_grid(\d+)x(\d+)", name)
+    if m:
+        return f"Ising {m.group(1)}x{m.group(2)}"
+
+    m = re.match(r"maxsat_d(\d+)_m(\d+)_k(\d+)", name)
+    if m:
+        return f"MaxSAT d{m.group(1)} m{m.group(2)} k{m.group(3)}"
+
+    m = re.match(r"nk_landscape_d(\d+)_k(\d+)", name)
+    if m:
+        return f"NK d{m.group(1)} k{m.group(2)}"
+
+    m = re.match(r"pairwise_qubo_d(\d+)_e(\d+)", name)
+    if m:
+        return f"QUBO d{m.group(1)} e{m.group(2)}"
+
+    m = re.match(r"planted_xor_d(\d+)_n(\d+)_g([^_]+)", name)
+    if m:
+        return f"Planted XOR d{m.group(1)} g{m.group(3)}"
+
+    m = re.match(r"gametes_style_d(\d+)_n(\d+)_loci(\d+)", name)
+    if m:
+        return f"GAMETES d{m.group(1)} loci{m.group(3)}"
+
     return "Other"
 
 
@@ -107,11 +129,17 @@ def ordered_methods(methods: Iterable[str]) -> list[str]:
     return known + unknown
 
 
+def family_sort_key(family: str) -> tuple[int, str]:
+    family = str(family)
+    for idx, prefix in enumerate(FAMILY_PREFIX_ORDER):
+        if family == prefix or family.startswith(prefix + " "):
+            return idx, family
+    return len(FAMILY_PREFIX_ORDER), family
+
+
 def ordered_families(families: Iterable[str]) -> list[str]:
     families = list(dict.fromkeys(map(str, families)))
-    known = [f for f in FAMILY_ORDER if f in families]
-    unknown = sorted(f for f in families if f not in FAMILY_ORDER)
-    return known + unknown
+    return sorted(families, key=family_sort_key)
 
 
 def savefig(outdir: Path, name: str) -> None:
@@ -282,7 +310,10 @@ def plot_sign_boxplot(summary: pd.DataFrame, outdir: Path, signed_methods: list[
     data = [df.loc[df["method"].eq(m), "sign_accuracy"].dropna().to_numpy() for m in methods]
     labels = [method_label(m) for m in methods]
     plt.figure(figsize=(8, 5))
-    plt.boxplot(data, labels=labels, showmeans=True)
+    try:
+        plt.boxplot(data, tick_labels=labels, showmeans=True)
+    except TypeError:
+        plt.boxplot(data, labels=labels, showmeans=True)
     plt.ylabel("Run-level sign accuracy")
     plt.ylim(-0.02, 1.02)
     plt.xticks(rotation=20, ha="right")
@@ -293,6 +324,14 @@ def plot_sign_boxplot(summary: pd.DataFrame, outdir: Path, signed_methods: list[
 
 def write_sign_tables(summary: pd.DataFrame, by_method: pd.DataFrame, signed_methods: list[str], outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+
+    dataset_family = (
+        by_method[["dataset", "family", "dataset_short"]]
+        .drop_duplicates()
+        .sort_values(["family", "dataset"])
+    )
+    dataset_family.to_csv(outdir / "dataset_family_mapping.csv", index=False)
+
     raw_overall = (
         by_method.groupby("method", as_index=False)
         .agg(
@@ -802,7 +841,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # python analysis_interactive/analyze_linkage_correctness/plot_linkage_sign_and_convergence_analysis.py `
-#   --summary "../Results/results_linkage_test/linkage_eval_summary.csv" `
-#   --by-method "../Results/results_linkage_test/linkage_eval_by_method.csv" `
-#   --results-root "../Results/results_linkage_test" `
-#   --outdir ../Results/results_linkage_test/linkage_sign_convergence_figures
+#   --summary "../Results/results_linkage_test_theory_v3/linkage_eval_summary.csv" `
+#   --by-method "../Results/results_linkage_test_theory_v3/linkage_eval_by_method.csv" `
+#   --results-root "../Results/results_linkage_test_theory_v3" `
+#   --outdir ../Results/results_linkage_test_theory_v3/linkage_sign_convergence_figures
