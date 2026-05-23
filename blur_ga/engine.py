@@ -76,6 +76,10 @@ class GeneticFeatureSelector:
         self._archive_chromosomes: list[np.ndarray] = []
         self._archive_fitness: list[float] = []
         self._archive_generations: list[int] = []
+        self._archive_cache_size = -1
+        self._archive_X_cache: np.ndarray | None = None
+        self._archive_y_cache: np.ndarray | None = None
+        self._archive_gen_cache: np.ndarray | None = None
         self._last_lr_archive_size = 0
         self._regression_stage = ga_type_to_regression_stage(config.ga_type)
         self._lr_learner: RegressionLinkageLearner | None = None
@@ -202,28 +206,33 @@ class GeneticFeatureSelector:
         theory_min = int(np.ceil(float(self.config.lr_min_samples_c) * s_hat * np.log((2.0 * p_cols) / delta)))
         return max(2, base, theory_min)
 
+    def _archive_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        archive_size = len(self._archive_chromosomes)
+        if self._archive_cache_size != archive_size or self._archive_X_cache is None:
+            self._archive_X_cache = np.vstack(self._archive_chromosomes).astype(np.int8, copy=False)
+            self._archive_y_cache = np.asarray(self._archive_fitness, dtype=float)
+            self._archive_gen_cache = np.asarray(self._archive_generations, dtype=int)
+            self._archive_cache_size = archive_size
+        assert self._archive_y_cache is not None
+        assert self._archive_gen_cache is not None
+        return self._archive_X_cache, self._archive_y_cache, self._archive_gen_cache
+
     def _fit_regression_graph(self, evig: RegressionVIG, generation: int, force: bool = False) -> None:
         if self._lr_learner is None:
             return
-
         archive_size = len(self._archive_chromosomes)
         if archive_size - self._last_lr_archive_size < self._effective_lr_min_samples() and not force:
             return
-        if archive_size == self._last_lr_archive_size:
+        if archive_size == self._last_lr_archive_size and evig.last_n_samples == archive_size:
+            evig.touch_fit_metadata(generation, archive_size)
             return
-
-        X_archive = np.vstack(self._archive_chromosomes).astype(np.int8, copy=False)
-        y_archive = np.asarray(self._archive_fitness, dtype=float)
-        gen_archive = np.asarray(self._archive_generations, dtype=int)
-
+        X_archive, y_archive, gen_archive = self._archive_arrays()
         fit = self._lr_learner.fit(X_archive, y_archive, gen_archive, generation=generation)
-
         evig.update_from_fit(
             fit,
             min_abs_weight=self.config.lr_edge_min_weight,
             top_k=self.config.lr_edge_top_k,
         )
-
         self._last_lr_archive_size = archive_size
 
     def _make_generation_trace_row(

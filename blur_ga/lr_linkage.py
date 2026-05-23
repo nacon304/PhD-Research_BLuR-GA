@@ -148,6 +148,19 @@ class RegressionVIG:
         self.selected_count = new_selected
         self.tested_count = new_tested
 
+    def touch_fit_metadata(self, generation: int, n_samples: int) -> None:
+        """Refresh fit metadata when the regression input archive is unchanged.
+
+        Re-fitting on the identical archive would produce the same coefficients,
+        weights, stability, and selected counts.  This method preserves the
+        generation-level metadata that output files expect without paying the
+        regression cost again.
+        """
+        self.last_fit_generation = int(generation)
+        self.last_n_samples = int(n_samples)
+        active = self.weight > 0.0
+        self.last_updated_generation[active] = int(generation)
+
     def edge_table(
         self,
         *,
@@ -407,18 +420,25 @@ class PartialMainPairwiseLassoEstimator:
 
     def __init__(self, *, design_builder: PairwiseDesignBuilder, alpha: float, random_state: int) -> None:
         self.design_builder = design_builder
+        self.pairwise_builder = PairwiseDesignBuilder(
+            self.design_builder.n_features,
+            include_main=False,
+            encoding=self.design_builder.encoding,
+        )
         self.alpha = float(alpha)
         self.random_state = int(random_state)
 
     def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
-        pair_design = PairwiseDesignBuilder(
-            self.design_builder.n_features,
-            include_main=False,
-            encoding=self.design_builder.encoding,
-        ).build(X_bits)
+        pair_design = self.pairwise_builder.build(X_bits)
         controls = self.design_builder.main_effect_matrix_with_intercept(X_bits)
-        y_resid = _residualize(np.asarray(y, dtype=np.float64).reshape(-1, 1), controls).reshape(-1)
-        z_resid = _residualize(pair_design.X, controls)
+        y_col = np.asarray(y, dtype=np.float64).reshape(-1, 1)
+        # Residualize y and all pairwise columns with a single least-squares
+        # projection.  This is algebraically the same as two separate calls to
+        # _residualize(..., controls), but avoids computing the same control
+        # decomposition twice.
+        resid = _residualize(np.hstack([y_col, pair_design.X]), controls)
+        y_resid = resid[:, 0]
+        z_resid = resid[:, 1:]
         z = _standardize_for_lasso(z_resid)
         model = _fit_sklearn_lasso(z.X, y_resid, alpha=self.alpha, random_state=self.random_state)
         return z.unscale_coefficients(np.asarray(model.coef_, dtype=float))
@@ -488,11 +508,23 @@ def _residualize(A: np.ndarray, controls: np.ndarray) -> np.ndarray:
     if C.size == 0:
         return A_arr.copy()
     try:
-        coef, *_ = np.linalg.lstsq(C, A_arr, rcond=None)
-        fitted = C @ coef
+        # Orthogonal projection using only the left singular vectors of the
+        # control design.  This computes the same least-squares residual
+        # M_C A as np.linalg.lstsq(C, A), but avoids solving for every RHS
+        # coefficient when A has thousands of pairwise columns.
+        U, s, _ = np.linalg.svd(C, full_matrices=False)
+        if s.size == 0:
+            return A_arr.copy()
+        tol = np.finfo(float).eps * max(C.shape) * float(s[0])
+        rank = int(np.sum(s > tol))
+        if rank <= 0:
+            return A_arr.copy()
+        Q = U[:, :rank]
+        resid = A_arr - Q @ (Q.T @ A_arr)
     except np.linalg.LinAlgError:
         fitted = C @ (np.linalg.pinv(C) @ A_arr)
-    return np.nan_to_num(A_arr - fitted, nan=0.0, posinf=0.0, neginf=0.0)
+        resid = A_arr - fitted
+    return np.nan_to_num(resid, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 class RegressionLinkageLearner:
