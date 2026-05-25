@@ -14,7 +14,8 @@ class GAConfig:
     """Configuration for one GA/BLuR-GA optimization run.
 
     ga_type:
-        0 = standard GA, 1 = empirical linkage GA, 2--7 = regression-linkage GA variants.
+        0 = standard GA, 1 = empirical linkage GA, 
+        2 = pairwise Lasso, 3 = partial main+pairwise Lasso.
     classifier_type:
         1 = KNN with k=3, 2 = KNN with k=5.
     crossover_probability:
@@ -56,18 +57,13 @@ class GAConfig:
     fitness_weight_sparsity: float = 0.02
     cache_fitness: bool = True
 
-    # Regression-linkage learner settings for ga_type 2--7.
-    # ga_type 2: pairwise-only ridge/OLS-like regression.
-    # ga_type 3: main effects + pairwise ridge/OLS-like regression.
-    # ga_type 4: backward-compatible sparse augmented main+pairwise ElasticNet/Lasso.
-    # ga_type 5: backward-compatible sparse augmented model with baseline-standardized excess response.
-    # ga_type 6: theory-aligned pairwise Lasso using bipolar pairwise terms.
-    # ga_type 7: theory-aligned partial Main+Pairwise Lasso with unpenalized main controls.
+    # Regression-linkage learner settings for ga_type 2/3.
+    # ga_type 2: theory-aligned pairwise Lasso using bipolar pairwise terms.
+    # ga_type 3: theory-aligned partial Main+Pairwise Lasso with unpenalized main controls.
     lr_gap_gen: int = 5
     lr_min_samples: int = 20
-    lr_ridge_alpha: float = 1e-6
     lr_sparse_alpha: float = 0.001
-    # Theory-guided PSLE/MPSLE settings for ga_type 6/7.
+    # Theory-guided PSLE/MPSLE settings for ga_type 2/3.
     # If enabled, lambda_g is computed at each regression fit as
     # c_lambda * sigma_hat_g * sqrt(2 log(2 p_g / delta) / n_g).
     # If enabled, the minimum archive size is at least
@@ -78,18 +74,16 @@ class GAConfig:
     lr_auto_min_samples: bool = True
     lr_expected_edges: int | None = None
     lr_min_samples_c: float = 1.0
-    lr_l1_ratio: float = 0.95
     lr_stability_subsamples: int = 0
     lr_stability_fraction: float = 0.75
     lr_edge_min_weight: float = 0.0
     lr_edge_top_k: int | None = None
-    lr_excess_window: int = 5
 
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
             raise ValueError("classifier_type must be 1 (KNN-3) or 2 (KNN-5).")
-        if self.ga_type not in (0, 1, 2, 3, 4, 5, 6, 7):
-            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, or 2--7 regression-linkage stages.")
+        if self.ga_type not in (0, 1, 2, 3):
+            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, 2 pairwise Lasso, or 3 main+pairwise Lasso.")
         if self.popsize < 4:
             raise ValueError("popsize must be at least 4.")
         if not 0.0 <= self.crossover_probability <= 1.0:
@@ -112,8 +106,6 @@ class GAConfig:
             raise ValueError("lr_gap_gen must be at least 1.")
         if self.lr_min_samples < 2:
             raise ValueError("lr_min_samples must be at least 2.")
-        if self.lr_ridge_alpha < 0:
-            raise ValueError("lr_ridge_alpha must be non-negative.")
         if self.lr_sparse_alpha < 0:
             raise ValueError("lr_sparse_alpha must be non-negative.")
         if self.lr_alpha_c < 0:
@@ -124,8 +116,6 @@ class GAConfig:
             raise ValueError("lr_expected_edges must be positive or None.")
         if self.lr_min_samples_c <= 0:
             raise ValueError("lr_min_samples_c must be positive.")
-        if not 0.0 < self.lr_l1_ratio <= 1.0:
-            raise ValueError("lr_l1_ratio must be in (0, 1].")
         if self.lr_stability_subsamples < 0:
             raise ValueError("lr_stability_subsamples must be non-negative.")
         if not 0.0 < self.lr_stability_fraction <= 1.0:
@@ -134,8 +124,6 @@ class GAConfig:
             raise ValueError("lr_edge_min_weight must be non-negative.")
         if self.lr_edge_top_k is not None and self.lr_edge_top_k < 1:
             raise ValueError("lr_edge_top_k must be positive or None.")
-        if self.lr_excess_window < 1:
-            raise ValueError("lr_excess_window must be at least 1.")
 
     @property
     def knn_k(self) -> int:

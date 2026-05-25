@@ -18,7 +18,7 @@ Run one task directly::
       --dataset-root ../Dataset/prepared_linkage_benchmark \
       --output-root Results/results_linkage \
       --datasets pairwise_qubo_d100_e150_posneg_noise0_seed0 \
-      --ga-types 6 --repeat-id 0 --outer-fold-id 0
+      --ga-types 2 --repeat-id 0 --outer-fold-id 0
 
 Create and run an HPC task manifest::
 
@@ -52,12 +52,8 @@ SUBCOMMANDS = {"run", "make-tasks", "run-task", "aggregate"}
 METHOD_FOLDER_NAMES: dict[int, str] = {
     0: "standard_ga",
     1: "empirical_linkage_legacy",
-    2: "blur_ga_stage1_pairwise",
-    3: "blur_ga_stage2_main_pairwise",
-    4: "blur_ga_stage3_sparse",
-    5: "blur_ga_stage4_sparse_excess",
-    6: "blur_ga_pairwise_lasso",
-    7: "blur_ga_main_pairwise_lasso",
+    2: "blur_ga_pairwise_lasso",
+    3: "blur_ga_main_pairwise_lasso",
 }
 
 
@@ -131,7 +127,6 @@ def build_ga_config(args: argparse.Namespace, ga_type: int) -> GAConfig:
         cache_fitness=not args.no_fitness_cache,
         lr_gap_gen=args.lr_gap_gen,
         lr_min_samples=args.lr_min_samples,
-        lr_ridge_alpha=args.lr_ridge_alpha,
         lr_sparse_alpha=args.lr_sparse_alpha,
         lr_auto_alpha=args.lr_auto_alpha,
         lr_alpha_c=args.lr_alpha_c,
@@ -139,12 +134,10 @@ def build_ga_config(args: argparse.Namespace, ga_type: int) -> GAConfig:
         lr_auto_min_samples=args.lr_auto_min_samples,
         lr_expected_edges=args.lr_expected_edges,
         lr_min_samples_c=args.lr_min_samples_c,
-        lr_l1_ratio=args.lr_l1_ratio,
         lr_stability_subsamples=args.lr_stability_subsamples,
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
-        lr_excess_window=args.lr_excess_window,
     )
 
 
@@ -381,7 +374,7 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dataset-root", required=True, help="Root folder containing manifest.csv and linkage/ prepared datasets.")
     p.add_argument("--output-root", required=True)
     p.add_argument("--datasets", nargs="+", default=["all"])
-    p.add_argument("--ga-types", nargs="+", type=int, default=[1, 2])
+    p.add_argument("--ga-types", nargs="+", type=int, choices=[0, 1, 2, 3], default=[1, 2])
     p.add_argument("--classifier", type=int, choices=[1, 2], default=1, help="Only used by supervised synthetic datasets.")
     p.add_argument("--repeat-id", type=int, default=0)
     p.add_argument("--outer-fold-id", type=int, default=0)
@@ -396,7 +389,7 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--include-all-returned", type=str2bool, default=True, help="Always write all-returned edge correctness row.")
     p.add_argument("--k-values", nargs="+", type=int, default=None, help="Optional top-k metrics. All-returned metrics are written separately by default.")
     p.add_argument("--write-aggregate-summary", type=str2bool, default=False, help="For local debugging only. HPC tasks should keep this false and run the aggregate subcommand later.")
-    p.add_argument("--popsize", type=int, default=40)
+    p.add_argument("--popsize", type=int, default=100)
     p.add_argument("--p-cross", type=float, default=0.4)
     p.add_argument("--ll-crossover-ratio", type=float, default=None)
     p.add_argument("--mutation-prob", type=float, default=None)
@@ -405,7 +398,7 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--resetpop-rate", type=float, default=0.99)
     p.add_argument("--local-search", type=str2bool, default=False)
     p.add_argument("--stop", choices=["gen", "time", "eval"], default="gen")
-    p.add_argument("--max-gen", type=int, default=20)
+    p.add_argument("--max-gen", type=int, default=100)
     p.add_argument("--max-time", type=float, default=None)
     p.add_argument("--max-evals", type=int, default=None)
     p.add_argument("--edge-epsilon", type=float, default=1e-6)
@@ -416,22 +409,19 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--graph-snapshot-top-k", type=int, default=None)
     p.add_argument("--graph-snapshot-min-weight", type=float, default=0.0)
     p.add_argument("--no-fitness-cache", action="store_true")
-    p.add_argument("--lr-gap-gen", type=int, default=2)
-    p.add_argument("--lr-min-samples", type=int, default=20)
-    p.add_argument("--lr-ridge-alpha", type=float, default=1e-6)
+    p.add_argument("--lr-gap-gen", type=int, default=1)
+    p.add_argument("--lr-min-samples", type=int, default=10)
     p.add_argument("--lr-sparse-alpha", type=float, default=0.001)
     p.add_argument("--lr-auto-alpha", type=str2bool, default=True)
-    p.add_argument("--lr-alpha-c", type=float, default=1.0)
+    p.add_argument("--lr-alpha-c", type=float, default=0.2)
     p.add_argument("--lr-delta", type=float, default=0.05)
     p.add_argument("--lr-auto-min-samples", type=str2bool, default=True)
-    p.add_argument("--lr-expected-edges", type=int, default=None)
-    p.add_argument("--lr-min-samples-c", type=float, default=1.0)
-    p.add_argument("--lr-l1-ratio", type=float, default=0.95)
+    p.add_argument("--lr-expected-edges", type=int, default=20)
+    p.add_argument("--lr-min-samples-c", type=float, default=2.0)
     p.add_argument("--lr-stability-subsamples", type=int, default=0)
     p.add_argument("--lr-stability-fraction", type=float, default=0.75)
     p.add_argument("--lr-edge-min-weight", type=float, default=0.0)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
-    p.add_argument("--lr-excess-window", type=int, default=5)
 
 
 def build_run_parser() -> argparse.ArgumentParser:
@@ -497,18 +487,15 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         "--graph-snapshot-min-weight", str(args.graph_snapshot_min_weight),
         "--lr-gap-gen", str(args.lr_gap_gen),
         "--lr-min-samples", str(args.lr_min_samples),
-        "--lr-ridge-alpha", str(args.lr_ridge_alpha),
         "--lr-sparse-alpha", str(args.lr_sparse_alpha),
         "--lr-auto-alpha", str(bool(args.lr_auto_alpha)).lower(),
         "--lr-alpha-c", str(args.lr_alpha_c),
         "--lr-delta", str(args.lr_delta),
         "--lr-auto-min-samples", str(bool(args.lr_auto_min_samples)).lower(),
         "--lr-min-samples-c", str(args.lr_min_samples_c),
-        "--lr-l1-ratio", str(args.lr_l1_ratio),
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
-        "--lr-excess-window", str(args.lr_excess_window),
     ]
     optional_pairs = [
         ("--output-groups", args.output_groups),
@@ -632,13 +619,13 @@ if __name__ == "__main__":
 
 # python run_linkage_eval.py `
 #   --dataset-root ../Dataset/prepared_linkage_benchmark_mini_debug `
-#   --output-root ../Results/results_linkage_test_theory_v3 `
+#   --output-root ../Results/results_linkage_test_theory_v4 `
 #   --datasets all `
-#   --ga-types 1 6 7 `
+#   --ga-types 1 2 3 `
 #   --repeat-id 0 `
 #   --outer-fold-id 0 `
 #   --popsize 100 `
-#   --max-gen 200 `
+#   --max-gen 100 `
 #   --lr-gap-gen 1 `
 #   --lr-min-samples 10 `
 #   --lr-auto-alpha true `

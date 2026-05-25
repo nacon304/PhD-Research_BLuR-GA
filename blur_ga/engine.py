@@ -87,16 +87,13 @@ class GeneticFeatureSelector:
             self._lr_learner = RegressionLinkageLearner(
                 n_features=self.n_features,
                 stage=self._regression_stage,
-                ridge_alpha=config.lr_ridge_alpha,
                 sparse_alpha=config.lr_sparse_alpha,
                 auto_alpha=config.lr_auto_alpha,
                 alpha_c=config.lr_alpha_c,
                 delta=config.lr_delta,
-                l1_ratio=config.lr_l1_ratio,
                 stability_subsamples=config.lr_stability_subsamples,
                 stability_fraction=config.lr_stability_fraction,
                 random_state=self.seed,
-                excess_window=config.lr_excess_window,
             )
 
     def run(self) -> RunResult:
@@ -189,7 +186,7 @@ class GeneticFeatureSelector:
     def _effective_lr_min_samples(self) -> int:
         """Return the archive-size threshold used before fitting regression linkage.
 
-        For ga_type 6/7, this implements the PSLE/MPSLE scaling
+        For ga_type 2/3, this implements the PSLE/MPSLE scaling
         n_min = ceil(c_n * s_hat * log(2 p_g / delta)), while keeping
         lr_min_samples as a user-specified lower bound for backward compatibility.
         Older regression stages keep the original fixed lr_min_samples behavior.

@@ -7,10 +7,6 @@ from typing import Literal, Protocol
 import numpy as np
 
 RegressionStage = Literal[
-    "pairwise_lr",
-    "main_pairwise_lr",
-    "sparse",
-    "sparse_excess",
     "pairwise_lasso",
     "main_pairwise_lasso",
 ]
@@ -241,27 +237,23 @@ class RegressionVIG:
 
 
 class PairwiseDesignBuilder:
-    """Build pairwise monomial designs from binary chromosomes.
+    """Build bipolar main-effect and pairwise-monomial designs.
 
-    `encoding='binary'` preserves the original 0/1 implementation for the old
-    dense stages. `encoding='bipolar'` implements the theoretical Lasso model
-    with u_i = 2x_i - 1, making pairwise columns better centered under balanced
-    sampling.
+    BLuR-GA now keeps only the theory-aligned Lasso linkage stages.  Therefore
+    all regression designs use u_i = 2 x_i - 1 instead of the older 0/1 dense
+    regression encoding.
     """
 
-    def __init__(self, n_features: int, *, include_main: bool, encoding: Literal["binary", "bipolar"] = "binary") -> None:
+    def __init__(self, n_features: int, *, include_main: bool) -> None:
         self.n_features = int(n_features)
         self.include_main = bool(include_main)
-        self.encoding = encoding
         self.pairs = [(i, j) for i in range(self.n_features) for j in range(i + 1, self.n_features)]
         self._pair_i = np.asarray([i for i, _ in self.pairs], dtype=int) if self.pairs else np.empty(0, dtype=int)
         self._pair_j = np.asarray([j for _, j in self.pairs], dtype=int) if self.pairs else np.empty(0, dtype=int)
 
     def _main_matrix(self, X_bits: np.ndarray) -> np.ndarray:
         X = np.asarray(X_bits, dtype=np.float64)
-        if self.encoding == "bipolar":
-            return 2.0 * X - 1.0
-        return X
+        return 2.0 * X - 1.0
 
     def build(self, X_bits: np.ndarray) -> _DesignData:
         main = self._main_matrix(X_bits)
@@ -280,111 +272,6 @@ class PairwiseDesignBuilder:
     def main_effect_matrix_with_intercept(self, X_bits: np.ndarray) -> np.ndarray:
         main = self._main_matrix(X_bits)
         return np.hstack([np.ones((main.shape[0], 1), dtype=float), main])
-
-
-class ResponseTransformer:
-    """Transforms raw fitness into a regression response."""
-
-    def __init__(self, *, use_excess: bool, excess_window: int = 5) -> None:
-        self.use_excess = bool(use_excess)
-        self.excess_window = int(excess_window)
-
-    def transform(self, y: np.ndarray, generations: np.ndarray) -> np.ndarray:
-        y_arr = np.asarray(y, dtype=np.float64)
-        if self.use_excess:
-            return self._baseline_standardized_excess(y_arr, np.asarray(generations, dtype=int))
-        return y_arr - float(np.mean(y_arr))
-
-    def _baseline_standardized_excess(self, y: np.ndarray, generations: np.ndarray) -> np.ndarray:
-        out = np.zeros_like(y, dtype=float)
-        unique_gens = np.unique(generations)
-        global_med = float(np.median(y))
-        global_mad = float(np.median(np.abs(y - global_med)))
-        global_scale = max(1.4826 * global_mad, float(np.std(y)), 1e-8)
-        for g in unique_gens:
-            lo = int(g) - max(1, self.excess_window) + 1
-            mask_window = (generations >= lo) & (generations <= int(g))
-            yw = y[mask_window]
-            if len(yw) >= 3:
-                b = float(np.median(yw))
-                mad = float(np.median(np.abs(yw - b)))
-                scale = max(1.4826 * mad, 1e-8)
-            else:
-                b = global_med
-                scale = global_scale
-            mask_g = generations == int(g)
-            out[mask_g] = (y[mask_g] - b) / scale
-        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-class DenseRidgeLinkageEstimator:
-    """Original dense pairwise/main+pairwise ridge estimator used by ga_type 2/3."""
-
-    def __init__(self, *, design_builder: PairwiseDesignBuilder, ridge_alpha: float) -> None:
-        self.design_builder = design_builder
-        self.ridge_alpha = float(ridge_alpha)
-
-    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
-        design = self.design_builder.build(X_bits)
-        model = self._fit_dense_ridge_dual(design.X, y)
-        coef = np.asarray(model.coef_, dtype=float)
-        pair_coef = coef[design.pair_start : design.pair_start + len(design.pairs)]
-        return np.nan_to_num(pair_coef, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def _fit_dense_ridge_dual(self, X_design: np.ndarray, y: np.ndarray) -> _DenseLinearModel:
-        X = np.ascontiguousarray(X_design, dtype=np.float64)
-        y_arr = np.asarray(y, dtype=np.float64).reshape(-1)
-        if X.shape[0] != y_arr.shape[0]:
-            raise ValueError("X_design and y length mismatch.")
-        if X.shape[0] == 0:
-            return _DenseLinearModel(np.zeros(X.shape[1], dtype=float), 0.0)
-        x_mean = np.mean(X, axis=0)
-        y_mean = float(np.mean(y_arr))
-        Xc = X - x_mean
-        yc = y_arr - y_mean
-        alpha = float(self.ridge_alpha)
-        gram = Xc @ Xc.T
-        if alpha > 0.0:
-            gram = gram + alpha * np.eye(gram.shape[0], dtype=gram.dtype)
-            try:
-                dual = np.linalg.solve(gram, yc)
-            except np.linalg.LinAlgError:
-                dual = np.linalg.pinv(gram) @ yc
-        else:
-            dual = np.linalg.pinv(gram) @ yc
-        coef = Xc.T @ dual
-        coef = np.nan_to_num(coef, nan=0.0, posinf=0.0, neginf=0.0)
-        intercept = y_mean - float(x_mean @ coef)
-        return _DenseLinearModel(coef_=coef, intercept_=intercept)
-
-
-class PenalizedAugmentedLinkageEstimator:
-    """Backward-compatible ElasticNet/Lasso-style augmented estimator for ga_type 4/5.
-
-    This intentionally keeps the old semantics: main and pairwise columns are
-    both included in the penalized augmented design. The theory-clean partial
-    Main+Pairwise Lasso is implemented separately by PartialMainPairwiseLassoEstimator.
-    """
-
-    def __init__(self, *, design_builder: PairwiseDesignBuilder, alpha: float, l1_ratio: float, random_state: int) -> None:
-        self.design_builder = design_builder
-        self.alpha = float(alpha)
-        self.l1_ratio = float(l1_ratio)
-        self.random_state = int(random_state)
-
-    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
-        design = self.design_builder.build(X_bits)
-        model = _fit_sklearn_elastic_net(
-            design.X,
-            y,
-            alpha=self.alpha,
-            l1_ratio=self.l1_ratio,
-            fit_intercept=True,
-            random_state=self.random_state,
-        )
-        coef = np.asarray(model.coef_, dtype=float)
-        pair_coef = coef[design.pair_start : design.pair_start + len(design.pairs)]
-        return np.nan_to_num(pair_coef, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 class PairwiseLassoEstimator:
@@ -423,7 +310,6 @@ class PartialMainPairwiseLassoEstimator:
         self.pairwise_builder = PairwiseDesignBuilder(
             self.design_builder.n_features,
             include_main=False,
-            encoding=self.design_builder.encoding,
         )
         self.alpha = float(alpha)
         self.random_state = int(random_state)
@@ -432,10 +318,9 @@ class PartialMainPairwiseLassoEstimator:
         pair_design = self.pairwise_builder.build(X_bits)
         controls = self.design_builder.main_effect_matrix_with_intercept(X_bits)
         y_col = np.asarray(y, dtype=np.float64).reshape(-1, 1)
-        # Residualize y and all pairwise columns with a single least-squares
-        # projection.  This is algebraically the same as two separate calls to
-        # _residualize(..., controls), but avoids computing the same control
-        # decomposition twice.
+        # Residualize y and all pairwise columns with a single projection. This
+        # avoids recomputing the same control decomposition for thousands of
+        # pairwise columns.
         resid = _residualize(np.hstack([y_col, pair_design.X]), controls)
         y_resid = resid[:, 0]
         z_resid = resid[:, 1:]
@@ -452,23 +337,6 @@ def _fit_sklearn_lasso(X: np.ndarray, y: np.ndarray, *, alpha: float, random_sta
     model = Lasso(
         alpha=float(alpha),
         fit_intercept=False,
-        max_iter=10000,
-        tol=1e-4,
-        selection="cyclic",
-        random_state=int(random_state),
-    )
-    return model.fit(np.ascontiguousarray(X, dtype=np.float64), np.asarray(y, dtype=np.float64))
-
-
-def _fit_sklearn_elastic_net(X: np.ndarray, y: np.ndarray, *, alpha: float, l1_ratio: float, fit_intercept: bool, random_state: int):
-    try:
-        from sklearn.linear_model import ElasticNet
-    except Exception as exc:  # pragma: no cover - environment-specific.
-        raise ImportError("scikit-learn is required for sparse regression-linkage learning") from exc
-    model = ElasticNet(
-        alpha=float(alpha),
-        l1_ratio=float(l1_ratio),
-        fit_intercept=bool(fit_intercept),
         max_iter=10000,
         tol=1e-4,
         selection="cyclic",
@@ -509,9 +377,9 @@ def _residualize(A: np.ndarray, controls: np.ndarray) -> np.ndarray:
         return A_arr.copy()
     try:
         # Orthogonal projection using only the left singular vectors of the
-        # control design.  This computes the same least-squares residual
-        # M_C A as np.linalg.lstsq(C, A), but avoids solving for every RHS
-        # coefficient when A has thousands of pairwise columns.
+        # control design. This computes the same least-squares residual M_C A as
+        # np.linalg.lstsq(C, A), but avoids solving for every RHS coefficient
+        # when A has thousands of pairwise columns.
         U, s, _ = np.linalg.svd(C, full_matrices=False)
         if s.size == 0:
             return A_arr.copy()
@@ -535,73 +403,45 @@ class RegressionLinkageLearner:
         *,
         n_features: int,
         stage: RegressionStage,
-        ridge_alpha: float = 1e-6,
         sparse_alpha: float = 0.001,
         auto_alpha: bool = True,
         alpha_c: float = 1.0,
         delta: float = 0.05,
-        l1_ratio: float = 0.95,
         stability_subsamples: int = 0,
         stability_fraction: float = 0.75,
         random_state: int = 1,
-        excess_window: int = 5,
     ) -> None:
         self.n_features = int(n_features)
         self.stage = stage
-        self.ridge_alpha = float(ridge_alpha)
         self.sparse_alpha = float(sparse_alpha)
         self.auto_alpha = bool(auto_alpha)
         self.alpha_c = float(alpha_c)
         self.delta = float(delta)
-        self.l1_ratio = float(l1_ratio)
         self.stability_subsamples = int(stability_subsamples)
         self.stability_fraction = float(stability_fraction)
         self.random_state = int(random_state)
-        self.excess_window = int(excess_window)
         self.pairs = [(i, j) for i in range(self.n_features) for j in range(i + 1, self.n_features)]
         self._rng = np.random.default_rng(self.random_state)
-        self._response = ResponseTransformer(use_excess=self.stage == "sparse_excess", excess_window=self.excess_window)
         self._estimator = self._build_estimator()
 
     @property
     def include_main_effects(self) -> bool:
-        return self.stage in {"main_pairwise_lr", "sparse", "sparse_excess", "main_pairwise_lasso"}
+        return self.stage == "main_pairwise_lasso"
 
     @property
     def use_sparse_model(self) -> bool:
-        return self.stage in {"sparse", "sparse_excess", "pairwise_lasso", "main_pairwise_lasso"}
-
-    @property
-    def use_excess_response(self) -> bool:
-        return self.stage == "sparse_excess"
+        return True
 
     def _build_estimator(self) -> _RegressionEstimator:
-        if self.stage == "pairwise_lr":
-            return DenseRidgeLinkageEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=False, encoding="binary"),
-                ridge_alpha=self.ridge_alpha,
-            )
-        if self.stage == "main_pairwise_lr":
-            return DenseRidgeLinkageEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True, encoding="binary"),
-                ridge_alpha=self.ridge_alpha,
-            )
-        if self.stage in {"sparse", "sparse_excess"}:
-            return PenalizedAugmentedLinkageEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True, encoding="binary"),
-                alpha=self.sparse_alpha,
-                l1_ratio=self.l1_ratio,
-                random_state=self.random_state,
-            )
         if self.stage == "pairwise_lasso":
             return PairwiseLassoEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=False, encoding="bipolar"),
+                design_builder=PairwiseDesignBuilder(self.n_features, include_main=False),
                 alpha=self.sparse_alpha,
                 random_state=self.random_state,
             )
         if self.stage == "main_pairwise_lasso":
             return PartialMainPairwiseLassoEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True, encoding="bipolar"),
+                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True),
                 alpha=self.sparse_alpha,
                 random_state=self.random_state,
             )
@@ -609,17 +449,10 @@ class RegressionLinkageLearner:
 
     @property
     def use_theory_alpha(self) -> bool:
-        # Only the theory-aligned Lasso stages use the PSLE/MPSLE lambda rule.
-        # Older sparse ElasticNet stages keep their original manual alpha.
-        return self.stage in {"pairwise_lasso", "main_pairwise_lasso"} and self.auto_alpha
+        return self.auto_alpha
 
     def theory_alpha(self, y_reg: np.ndarray, *, n_samples: int | None = None, p_columns: int | None = None) -> float:
-        """Return lambda_g = c_lambda sigma_hat sqrt(2 log(2 p_g / delta) / n_g).
-
-        This is the implementation counterpart of the PSLE noise-score corollary.
-        If auto-alpha is disabled or the stage is not theory-aligned Lasso, the
-        user-provided sparse_alpha is returned unchanged.
-        """
+        """Return lambda_g = c_lambda sigma_hat sqrt(2 log(2 p_g / delta) / n_g)."""
         if not self.use_theory_alpha:
             return float(self.sparse_alpha)
         y_arr = np.asarray(y_reg, dtype=np.float64).reshape(-1)
@@ -630,8 +463,6 @@ class RegressionLinkageLearner:
         sigma_hat = float(np.std(y_arr, ddof=1))
         if not np.isfinite(sigma_hat):
             sigma_hat = 0.0
-        # When the response is constant, any Lasso fit is uninformative.  Keeping
-        # lambda at zero avoids inventing a large penalty from numerical noise.
         if sigma_hat <= 1e-12:
             return 0.0
         delta = min(max(float(self.delta), 1e-12), 1.0 - 1e-12)
@@ -651,7 +482,6 @@ class RegressionLinkageLearner:
     def fit(self, chromosomes: np.ndarray, fitness: np.ndarray, generations: np.ndarray, *, generation: int) -> RegressionLinkageFit:
         X_bits = np.asarray(chromosomes, dtype=np.float64)
         y = np.asarray(fitness, dtype=np.float64)
-        gens = np.asarray(generations, dtype=int)
         if X_bits.ndim != 2 or X_bits.shape[1] != self.n_features:
             raise ValueError("chromosomes must have shape (n_samples, n_features).")
         if len(X_bits) != len(y):
@@ -660,14 +490,14 @@ class RegressionLinkageLearner:
             zeros = np.zeros(len(self.pairs), dtype=float)
             return RegressionLinkageFit(generation, len(X_bits), self.pairs, zeros, zeros, zeros, zeros.astype(int))
 
-        y_reg = self._response.transform(y, gens)
+        y_reg = y - float(np.mean(y))
         alpha_g = self.theory_alpha(y_reg, n_samples=len(X_bits), p_columns=len(self.pairs))
         pair_coef = self._fit_with_current_alpha(X_bits, y_reg, alpha=alpha_g)
         pair_coef = np.nan_to_num(pair_coef, nan=0.0, posinf=0.0, neginf=0.0)
 
         stability = np.ones_like(pair_coef, dtype=float)
         selected_counts = (np.abs(pair_coef) > 1e-12).astype(int)
-        if self.use_sparse_model and self.stability_subsamples > 0 and len(X_bits) >= 4:
+        if self.stability_subsamples > 0 and len(X_bits) >= 4:
             stability, selected_counts = self._stability_selection(X_bits, y_reg)
 
         weights = np.abs(pair_coef) * stability
@@ -694,28 +524,20 @@ class RegressionLinkageLearner:
         stability = counts.astype(float) / max(1, self.stability_subsamples)
         return stability, counts
 
-    # Backward-compatible helpers used by older notebooks/scripts.
+    # Helper kept for notebooks/debugging.
     def _design_matrix(self, X_bits: np.ndarray) -> tuple[np.ndarray, int]:
         builder = PairwiseDesignBuilder(
             self.n_features,
             include_main=self.include_main_effects,
-            encoding="binary",
         )
         design = builder.build(X_bits)
         return design.X, design.pair_start
 
-    def _baseline_standardized_excess(self, y: np.ndarray, generations: np.ndarray) -> np.ndarray:
-        return ResponseTransformer(use_excess=True, excess_window=self.excess_window).transform(y, generations)
-
 
 def ga_type_to_regression_stage(ga_type: int) -> RegressionStage | None:
     mapping: dict[int, RegressionStage] = {
-        2: "pairwise_lr",
-        3: "main_pairwise_lr",
-        4: "sparse",
-        5: "sparse_excess",
-        6: "pairwise_lasso",
-        7: "main_pairwise_lasso",
+        2: "pairwise_lasso",
+        3: "main_pairwise_lasso",
     }
     return mapping.get(int(ga_type))
 

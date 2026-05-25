@@ -15,7 +15,7 @@ set -euo pipefail
 
 DATASET="$1"
 CLASSIFIER="$2"        # 1 = KNN-3, 2 = KNN-5
-GA_TYPE="$3"           # 0 = standard GA, 1 = empirical linkage GA, 2..7 = LR/Lasso linkage stages
+GA_TYPE="$3"           # 0 = standard GA, 1 = empirical linkage GA, 2 = pairwise Lasso, 3 = main+pairwise Lasso
 OUTER_FOLD_ID="$4"     # 0-based outer fold id
 OUT_ROOT="$5"
 shift 5

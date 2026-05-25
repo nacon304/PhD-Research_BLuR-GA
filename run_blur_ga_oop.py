@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("problem", help="Dataset name without .dat, or explicit .dat path")
     parser.add_argument("classifier", type=int, choices=[1, 2], help="1: KNN-3, 2: KNN-5")
-    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3, 4, 5, 6, 7], help="0: standard GA, 1: empirical linkage GA, 2: pairwise LR, 3: main+pairwise LR, 4: sparse augmented, 5: sparse+excess, 6: pairwise Lasso, 7: partial main+pairwise Lasso")
+    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3], help="0: standard GA, 1: empirical linkage GA, 2: pairwise Lasso, 3: partial main+pairwise Lasso")
     parser.add_argument("--data-dir", default=".", help="Directory containing <problem>.dat")
     parser.add_argument("--output-dir", default="results_nested", help="Directory for result CSV files")
     parser.add_argument("--artifact-layout", choices=["both", "nested", "root"], default="both", help="Where to write per-run artifacts. both preserves old root files and nested HPC-safe files.")
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resetpop-rate", type=float, default=0.99)
     parser.add_argument("--local-search", type=str2bool, default=False)
     parser.add_argument("--stop", choices=["gen", "time", "eval"], default="gen")
-    parser.add_argument("--max-gen", type=int, default=200)
+    parser.add_argument("--max-gen", type=int, default=100)
     parser.add_argument("--max-time", type=float, default=None)
     parser.add_argument("--max-evals", type=int, default=None)
     parser.add_argument("--edge-epsilon", type=float, default=1e-6)
@@ -62,23 +62,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph-snapshot-min-weight", type=float, default=0.0, help="Only save snapshot edges with weight >= this value")
     parser.add_argument("--no-fitness-cache", action="store_true", help="Disable chromosome-level fitness cache")
 
-    # Regression-linkage options for ga_type 2--7.
-    parser.add_argument("--lr-gap-gen", type=int, default=5, help="Fit/update the LR linkage graph every N generations")
-    parser.add_argument("--lr-min-samples", type=int, default=20, help="Minimum unique evaluated solutions before fitting LR linkage")
-    parser.add_argument("--lr-ridge-alpha", type=float, default=1e-6, help="Small ridge penalty for ga_type 2/3; use 0 for pure OLS-like fitting")
-    parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="Manual ElasticNet/Lasso alpha; used directly for ga_type 4/5 and as fallback for ga_type 6/7 when --lr-auto-alpha=false")
-    parser.add_argument("--lr-auto-alpha", type=str2bool, default=True, help="For ga_type 6/7, compute lambda_g = c_lambda*sigma_hat*sqrt(2 log(2p/delta)/n) at each fit")
-    parser.add_argument("--lr-alpha-c", type=float, default=1.0, help="c_lambda multiplier for theory-guided ga_type 6/7 Lasso penalty")
+    # Regression-linkage options for ga_type 2/3.
+    parser.add_argument("--lr-gap-gen", type=int, default=1, help="Fit/update the LR linkage graph every N generations")
+    parser.add_argument("--lr-min-samples", type=int, default=10, help="Minimum unique evaluated solutions before fitting LR linkage")
+    parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="Manual Lasso alpha; used as fallback for ga_type 2/3 when --lr-auto-alpha=false")
+    parser.add_argument("--lr-auto-alpha", type=str2bool, default=True, help="For ga_type 2/3, compute lambda_g = c_lambda*sigma_hat*sqrt(2 log(2p/delta)/n) at each fit")
+    parser.add_argument("--lr-alpha-c", type=float, default=0.2, help="c_lambda multiplier for theory-guided ga_type 2/3 Lasso penalty")
     parser.add_argument("--lr-delta", type=float, default=0.05, help="Failure probability delta used by theory-guided lambda and n_min rules")
-    parser.add_argument("--lr-auto-min-samples", type=str2bool, default=True, help="For ga_type 6/7, require at least ceil(c_n*s_hat*log(2p/delta)) archive samples before refitting")
-    parser.add_argument("--lr-expected-edges", type=int, default=None, help="s_hat: expected number of relevant linkage edges for the PSLE archive-size rule; default 1")
-    parser.add_argument("--lr-min-samples-c", type=float, default=1.0, help="c_n multiplier for the theory-guided ga_type 6/7 minimum archive-size rule")
-    parser.add_argument("--lr-l1-ratio", type=float, default=0.95, help="ElasticNet L1 ratio for ga_type 4/5; ga_type 6/7 use pure Lasso and ignore this option")
-    parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in sparse/Lasso ga_type 4/5/6/7")
+    parser.add_argument("--lr-auto-min-samples", type=str2bool, default=True, help="For ga_type 2/3, require at least ceil(c_n*s_hat*log(2p/delta)) archive samples before refitting")
+    parser.add_argument("--lr-expected-edges", type=int, default=20, help="s_hat: expected number of relevant linkage edges for the PSLE archive-size rule; default 1")
+    parser.add_argument("--lr-min-samples-c", type=float, default=2.0, help="c_n multiplier for the theory-guided ga_type 2/3 minimum archive-size rule")
+    parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in Lasso ga_type 2/3")
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
-    parser.add_argument("--lr-excess-window", type=int, default=5, help="Rolling generation window for baseline-standardized excess response")
     return parser
 
 
@@ -111,7 +108,6 @@ def main(argv: list[str] | None = None) -> None:
         cache_fitness=not args.no_fitness_cache,
         lr_gap_gen=args.lr_gap_gen,
         lr_min_samples=args.lr_min_samples,
-        lr_ridge_alpha=args.lr_ridge_alpha,
         lr_sparse_alpha=args.lr_sparse_alpha,
         lr_auto_alpha=args.lr_auto_alpha,
         lr_alpha_c=args.lr_alpha_c,
@@ -119,12 +115,10 @@ def main(argv: list[str] | None = None) -> None:
         lr_auto_min_samples=args.lr_auto_min_samples,
         lr_expected_edges=args.lr_expected_edges,
         lr_min_samples_c=args.lr_min_samples_c,
-        lr_l1_ratio=args.lr_l1_ratio,
         lr_stability_subsamples=args.lr_stability_subsamples,
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
-        lr_excess_window=args.lr_excess_window,
     )
     exp_cfg = ExperimentConfig(
         outer_folds=args.outer_folds,
@@ -139,7 +133,7 @@ def main(argv: list[str] | None = None) -> None:
     print("\n ***** BLuR-GA / Nested CV Runner *****")
     print(f"Dataset: {dataset.name} | samples={dataset.n_samples} | features={dataset.n_features}")
     print(f"GA type: {ga_cfg.ga_type} | classifier: KNN-{ga_cfg.knn_k}")
-    if ga_cfg.ga_type in {2, 3, 4, 5, 6, 7}:
+    if ga_cfg.ga_type in {2, 3}:
         print(
             f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
             f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
@@ -161,97 +155,10 @@ def main(argv: list[str] | None = None) -> None:
 if __name__ == "__main__":
     main()
 
-# python run_blur_ga.py anneal_task363614 1 1 `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-dir ps_empirical_linkage `
-#   --outer-folds 3 `
-#   --inner-folds 3 `
-#   --repeats 3 `
-#   --save-generation-trace true `
-#   --save-linkage-events true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
-
-# python run_blur_ga.py anneal_task363614 1 2 `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-dir ps_stage2_pairwise `
-#   --outer-folds 3 `
-#   --inner-folds 3 `
-#   --repeats 3 `
-#   --lr-gap-gen 1 `
-#   --lr-min-samples 1000 `
-#   --save-generation-trace true `
-#   --save-linkage-events true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
-#   --lr-edge-top-k 120 `
-
-# python run_blur_ga.py anneal_task363614 1 3 `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-dir ps_stage3_main_pair `
-#   --outer-folds 3 `
-#   --inner-folds 3 `
-#   --repeats 3 `
-#   --lr-gap-gen 1 `
-#   --lr-min-samples 1000 `
-#   --save-generation-trace true `
-#   --save-linkage-events true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
-#   --lr-edge-top-k 120 `
-
-# python run_blur_ga.py anneal_task363614 1 4 `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-dir ps_stage4_sparse `
-#   --outer-folds 3 `
-#   --inner-folds 3 `
-#   --repeats 3 `
-#   --lr-gap-gen 1 `
-#   --lr-min-samples 20 `
-#   --lr-sparse-alpha 0.05 `
-#   --lr-l1-ratio 0.7 `
-#   --lr-edge-top-k 120 `
-#   --save-generation-trace true `
-#   --save-linkage-events true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
-
-# python run_blur_ga.py anneal_task363614 1 5 `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-dir ps_stage5_final `
-#   --outer-folds 3 `
-#   --inner-folds 3 `
-#   --repeats 3 `
-#   --lr-gap-gen 1 `
-#   --lr-min-samples 30 `
-#   --lr-sparse-alpha 0.5 `
-#   --lr-l1-ratio 0.8 `
-#   --lr-edge-min-weight 0.05 `
-#   --save-generation-trace true `
-#   --save-linkage-events true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
-
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ps_empirical_linkage/graph_snapshots_anneal_task363614_c1_a1_r0.csv `
-#   --trace ps_empirical_linkage/generation_trace_anneal_task363614_c1_a1.csv `
-#   --selected-features ps_empirical_linkage/selected_features_anneal_task363614_c1_a1.csv `
-#   --run-id 0 `
-#   --output ps_empirical_linkage/graph_evolution_ui.html `
-#   --layout spring
-
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ps_stage2_pairwise/graph_snapshots_anneal_task363614_c1_a2_r0.csv `
-#   --trace ps_stage2_pairwise/generation_trace_anneal_task363614_c1_a2.csv `
-#   --selected-features ps_stage2_pairwise/selected_features_anneal_task363614_c1_a2.csv `
-#   --run-id 0 `
-#   --output ps_stage2_pairwise/graph_evolution_ui.html `
-#   --layout spring
-
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ps_stage3_main_pair/graph_snapshots_anneal_task363614_c1_a3_r0.csv `
-#   --trace ps_stage3_main_pair/generation_trace_anneal_task363614_c1_a3.csv `
-#   --selected-features ps_stage3_main_pair/selected_features_anneal_task363614_c1_a3.csv `
-#   --run-id 0 `
-#   --output ps_stage3_main_pair/graph_evolution_ui.html `
-#   --layout spring
+# Example
+# python run_blur_ga_oop.py anneal_task363614 2 2 \
+#   --data-dir ../Dataset/prepared_tabarena \
+#   --output-dir results/anneal_pairwise_lasso \
+#   --outer-folds 3 --inner-folds 3 --repeats 3 \
+#   --lr-gap-gen 1 --lr-min-samples 20 \
+#   --save-generation-trace true --save-graph-snapshots true

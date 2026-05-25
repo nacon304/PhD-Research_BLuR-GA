@@ -40,7 +40,7 @@ PRESETS: dict[str, dict[str, object]] = {
     },
     "analysis": {
         "popsize": 100,
-        "max_gen": 200,
+        "max_gen": 100,
         "repeats": 2,
         "outer_folds": 2,
         "inner_folds": 3,
@@ -52,7 +52,7 @@ PRESETS: dict[str, dict[str, object]] = {
     },
     "nesi_full": {
         "popsize": 100,
-        "max_gen": 200,
+        "max_gen": 100,
         "repeats": 10,
         "outer_folds": 3,
         "inner_folds": 3,
@@ -89,21 +89,16 @@ class Job:
 METHOD_FOLDER_NAMES: dict[int, str] = {
     0: "standard_ga",
     1: "empirical_linkage_legacy",
-    2: "blur_ga_stage1_pairwise",
-    3: "blur_ga_stage2_main_pairwise",
-    4: "blur_ga_stage3_sparse",
-    5: "blur_ga_stage4_sparse_excess",
-    6: "blur_ga_pairwise_lasso",
-    7: "blur_ga_main_pairwise_lasso",
+    2: "blur_ga_pairwise_lasso",
+    3: "blur_ga_main_pairwise_lasso",
 }
 
 
 def method_folder_name(ga_type: int) -> str:
     """Human-readable method folder used under --output-root.
 
-    File names still keep the compact _a<ga_type> suffix for backward-compatible
-    analysis scripts; only the directory name changes from a1/a2/... to a
-    descriptive method label.
+    File names keep the compact _a<ga_type> suffix, while directories use
+    descriptive method labels.
     """
     return METHOD_FOLDER_NAMES.get(int(ga_type), f"method_{int(ga_type)}")
 
@@ -183,7 +178,7 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "resetpop_rate": 0.99,
         "local_search": False,
         "stop": "gen",
-        "max_gen": 200,
+        "max_gen": 100,
         "max_time": None,
         "max_evals": None,
         "edge_epsilon": 1e-6,
@@ -194,22 +189,19 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "graph_snapshot_top_k": None,
         "graph_snapshot_min_weight": 0.0,
         "no_fitness_cache": False,
-        "lr_gap_gen": 5,
-        "lr_min_samples": 20,
-        "lr_ridge_alpha": 1e-6,
+        "lr_gap_gen": 1,
+        "lr_min_samples": 10,
         "lr_sparse_alpha": 0.001,
         "lr_auto_alpha": True,
-        "lr_alpha_c": 1.0,
+        "lr_alpha_c": 0.2,
         "lr_delta": 0.05,
         "lr_auto_min_samples": True,
-        "lr_expected_edges": None,
-        "lr_min_samples_c": 1.0,
-        "lr_l1_ratio": 0.95,
+        "lr_expected_edges": 20,
+        "lr_min_samples_c": 2.0,
         "lr_stability_subsamples": 0,
         "lr_stability_fraction": 0.75,
         "lr_edge_min_weight": 0.0,
         "lr_edge_top_k": None,
-        "lr_excess_window": 5,
         # "artifact_layout": "both",
         "artifact_layout": "nested",
         # "write_aggregate_outputs": True,
@@ -265,18 +257,15 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--graph-snapshot-min-weight", str(args.graph_snapshot_min_weight),
         "--lr-gap-gen", str(args.lr_gap_gen),
         "--lr-min-samples", str(args.lr_min_samples),
-        "--lr-ridge-alpha", str(args.lr_ridge_alpha),
         "--lr-sparse-alpha", str(args.lr_sparse_alpha),
         "--lr-auto-alpha", str(bool(args.lr_auto_alpha)).lower(),
         "--lr-alpha-c", str(args.lr_alpha_c),
         "--lr-delta", str(args.lr_delta),
         "--lr-auto-min-samples", str(bool(args.lr_auto_min_samples)).lower(),
         "--lr-min-samples-c", str(args.lr_min_samples_c),
-        "--lr-l1-ratio", str(args.lr_l1_ratio),
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
-        "--lr-excess-window", str(args.lr_excess_window),
         "--artifact-layout", str(args.artifact_layout),
         "--write-aggregate-outputs", str(bool(args.write_aggregate_outputs)).lower(),
     ]
@@ -342,7 +331,6 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-fitness-cache", action="store_true")
     p.add_argument("--lr-gap-gen", type=int, default=None)
     p.add_argument("--lr-min-samples", type=int, default=None)
-    p.add_argument("--lr-ridge-alpha", type=float, default=None)
     p.add_argument("--lr-sparse-alpha", type=float, default=None)
     p.add_argument("--lr-auto-alpha", type=str2bool, default=None)
     p.add_argument("--lr-alpha-c", type=float, default=None)
@@ -350,12 +338,10 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-auto-min-samples", type=str2bool, default=None)
     p.add_argument("--lr-expected-edges", type=int, default=None)
     p.add_argument("--lr-min-samples-c", type=float, default=None)
-    p.add_argument("--lr-l1-ratio", type=float, default=None)
     p.add_argument("--lr-stability-subsamples", type=int, default=None)
     p.add_argument("--lr-stability-fraction", type=float, default=None)
     p.add_argument("--lr-edge-min-weight", type=float, default=None)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
-    p.add_argument("--lr-excess-window", type=int, default=None)
     p.add_argument("--artifact-layout", choices=["both", "nested", "root"], default=None)
     p.add_argument("--write-aggregate-outputs", type=str2bool, default=None)
 
@@ -624,7 +610,7 @@ if __name__ == "__main__":
 #   --output-root ../Results/results_analysis_test_v2 `
 #   --datasets anneal_task363614 `
 #   --classifiers 2 `
-#   --ga-types 1 6 7 `
+#   --ga-types 1 2 3 `
 #   --repeat 1 `
 #   --inner-folds 2 `
 #   --outer-folds 2 `
@@ -654,8 +640,8 @@ if __name__ == "__main__":
 
 # python analysis_interactive/make_graph_ui.py `
 #   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a6.csv `
-#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a6.csv `
+#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a2.csv `
+#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a2.csv `
 #   --run-id 0 `
 #   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `
@@ -664,8 +650,8 @@ if __name__ == "__main__":
 
 # python analysis_interactive/make_graph_ui.py `
 #   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
-#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a7.csv `
-#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a7.csv `
+#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a3.csv `
+#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a3.csv `
 #   --run-id 0 `
 #   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
 #   --layout-k-scale 2.0 `

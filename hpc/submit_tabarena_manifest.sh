@@ -14,18 +14,14 @@ INNER_FOLDS="${INNER_FOLDS:-3}"
 MAX_GEN="${MAX_GEN:-200}"
 POPSIZE="${POPSIZE:-100}"
 CLASSIFIERS=(${CLASSIFIERS:-1})
-GA_TYPES=(${GA_TYPES:-0 1 2 3 4 5 6 7})
+GA_TYPES=(${GA_TYPES:-0 1 2 3})
 
 method_folder_name() {
   case "$1" in
     0) echo "standard_ga" ;;
     1) echo "empirical_linkage_legacy" ;;
-    2) echo "blur_ga_stage1_pairwise" ;;
-    3) echo "blur_ga_stage2_main_pairwise" ;;
-    4) echo "blur_ga_stage3_sparse" ;;
-    5) echo "blur_ga_stage4_sparse_excess" ;;
-    6) echo "blur_ga_pairwise_lasso" ;;
-    7) echo "blur_ga_main_pairwise_lasso" ;;
+    2) echo "blur_ga_pairwise_lasso" ;;
+    3) echo "blur_ga_main_pairwise_lasso" ;;
     *) echo "method_$1" ;;
   esac
 }
