@@ -70,16 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-alpha-c", type=float, default=0.2, help="c_lambda multiplier for theory-guided ga_type 2/3 Lasso penalty")
     parser.add_argument("--lr-delta", type=float, default=0.05, help="Failure probability delta used by theory-guided lambda and n_min rules")
     parser.add_argument("--lr-auto-min-samples", type=str2bool, default=True, help="For ga_type 2/3, require at least ceil(c_n*s_hat*log(2p/delta)) archive samples before refitting")
-    parser.add_argument("--lr-expected-edges", type=int, default=20, help="s_hat: expected number of relevant linkage edges for the PSLE archive-size rule; default 1")
+    parser.add_argument("--lr-expected-edges", type=int, default=60, help="s_hat: expected number of relevant linkage edges for the PSLE archive-size rule; default 1")
+    parser.add_argument("--lr-refit-expected-edges", type=int, default=30, help="Expected number of relevant linkage edges used for later LR refit archive-increment rule; default uses --lr-expected-edges")
     parser.add_argument("--lr-min-samples-c", type=float, default=2.0, help="c_n multiplier for the theory-guided ga_type 2/3 minimum archive-size rule")
     parser.add_argument("--lr-stability-subsamples", type=int, default=0, help="Number of subsampling refits for stability selection in Lasso ga_type 2/3")
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
 
-    # LTGA building-block diagnostics for ga_type 1/2/3. This does not change the GA operator.
+    # LTGA building-block diagnostics/search for ga_type 1/2/3.  Search modes are active for ga_type 2/3.
     parser.add_argument("--build-building-blocks", type=str2bool, default=False, help="Extract LTGA building blocks from the current linkage graph during the run")
     parser.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default="absolute", help="LTGA mode: absolute uses |w|; signed uses |w| plus same/opposite polarity consistency; positive keeps only positive same-state edges")
+    parser.add_argument("--bb-search-mode", choices=["none", "uniform", "pattern_refine"], default="none", help="Use extracted blocks to guide GA search: none, uniform, or pattern_refine")
     parser.add_argument("--bb-gawll-update-interval", type=int, default=None, help="For ga_type=1/GAwLL only: rebuild LTGA building blocks every N generations; defaults to --bb-snapshot-interval")
     parser.add_argument("--bb-min-block-size", type=int, default=2)
     parser.add_argument("--bb-max-block-size", type=int, default=None)
@@ -87,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bb-snapshot-interval", type=int, default=1, help="Extract/log building blocks every N generations")
     parser.add_argument("--bb-external-penalty", type=float, default=0.25)
     parser.add_argument("--bb-size-penalty", type=float, default=0.01)
+    parser.add_argument("--bb-pattern-top-fraction", type=float, default=0.30, help="Top archive fraction used to learn block patterns")
+    parser.add_argument("--bb-pattern-min-support", type=int, default=2, help="Minimum top-archive support for a pattern before fallback")
+    parser.add_argument("--bb-refine-fraction", type=float, default=0.20, help="Fraction of offspring refined in pattern_refine mode")
+    parser.add_argument("--bb-max-refine-trials", type=int, default=10, help="Max extra refinement evaluations per generation; default 10 for runtime control")
+    parser.add_argument("--bb-accept-equal-sparser", type=str2bool, default=True, help="Accept equal-fitness pattern refinements only when they reduce subset size")
+    parser.add_argument("--bb-shuffle-blocks", type=str2bool, default=True, help="Shuffle selected blocks before applying BB operators")
+    parser.add_argument("--bb-signed-repair-probability", type=float, default=0.75, help="Probability of repairing signed-mode copied blocks to same/opposite schema")
     return parser
 
 
@@ -125,6 +134,7 @@ def main(argv: list[str] | None = None) -> None:
         lr_delta=args.lr_delta,
         lr_auto_min_samples=args.lr_auto_min_samples,
         lr_expected_edges=args.lr_expected_edges,
+        lr_refit_expected_edges=args.lr_refit_expected_edges,
         lr_min_samples_c=args.lr_min_samples_c,
         lr_stability_subsamples=args.lr_stability_subsamples,
         lr_stability_fraction=args.lr_stability_fraction,
@@ -132,6 +142,7 @@ def main(argv: list[str] | None = None) -> None:
         lr_edge_top_k=args.lr_edge_top_k,
         build_building_blocks=args.build_building_blocks,
         bb_weight_mode=args.bb_weight_mode,
+        bb_search_mode=args.bb_search_mode,
         bb_gawll_update_interval=args.bb_gawll_update_interval,
         bb_min_block_size=args.bb_min_block_size,
         bb_max_block_size=args.bb_max_block_size,
@@ -139,6 +150,13 @@ def main(argv: list[str] | None = None) -> None:
         bb_snapshot_interval=args.bb_snapshot_interval,
         bb_external_penalty=args.bb_external_penalty,
         bb_size_penalty=args.bb_size_penalty,
+        bb_pattern_top_fraction=args.bb_pattern_top_fraction,
+        bb_pattern_min_support=args.bb_pattern_min_support,
+        bb_refine_fraction=args.bb_refine_fraction,
+        bb_max_refine_trials=args.bb_max_refine_trials,
+        bb_accept_equal_sparser=args.bb_accept_equal_sparser,
+        bb_shuffle_blocks=args.bb_shuffle_blocks,
+        bb_signed_repair_probability=args.bb_signed_repair_probability,
     )
     exp_cfg = ExperimentConfig(
         outer_folds=args.outer_folds,
@@ -161,7 +179,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     if ga_cfg.build_building_blocks and ga_cfg.ga_type != 0:
         print(
-            f"LTGA building blocks: mode={ga_cfg.bb_weight_mode}, "
+            f"LTGA building blocks: mode={ga_cfg.bb_weight_mode}, search={ga_cfg.bb_search_mode}, "
             f"gawll_interval={ga_cfg.bb_gawll_update_interval or ga_cfg.bb_snapshot_interval}, "
             f"type2/3_update=after_successful_LR, max_blocks={ga_cfg.bb_max_blocks}"
         )

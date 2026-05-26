@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from .building_blocks import BBWeightMode
+from .bb_search import BBSearchMode
 
 ProblemType = Literal["classification", "regression"]
 StopCriterion = Literal["gen", "time", "eval"]
@@ -75,6 +76,7 @@ class GAConfig:
     lr_delta: float = 0.05
     lr_auto_min_samples: bool = True
     lr_expected_edges: int | None = None
+    lr_refit_expected_edges: int | None = None
     lr_min_samples_c: float = 1.0
     lr_stability_subsamples: int = 0
     lr_stability_fraction: float = 0.75
@@ -82,9 +84,11 @@ class GAConfig:
     lr_edge_top_k: int | None = None
 
     # Optional LTGA-style building-block extraction from the current linkage graph.
-    # This is a diagnostic layer by default; it does not alter crossover/mutation.
+    # When bb_search_mode is "none", blocks are diagnostic only.  The two active
+    # search modes are "uniform" and "pattern_refine" for ga_type 2/3.
     build_building_blocks: bool = False
     bb_weight_mode: BBWeightMode = "absolute"
+    bb_search_mode: BBSearchMode = "none"
     bb_gawll_update_interval: int | None = None
     bb_min_block_size: int = 2
     bb_max_block_size: int | None = None
@@ -92,6 +96,13 @@ class GAConfig:
     bb_snapshot_interval: int = 1
     bb_external_penalty: float = 0.25
     bb_size_penalty: float = 0.01
+    bb_pattern_top_fraction: float = 0.30
+    bb_pattern_min_support: int = 2
+    bb_refine_fraction: float = 0.20
+    bb_max_refine_trials: int | None = 10
+    bb_accept_equal_sparser: bool = True
+    bb_shuffle_blocks: bool = True
+    bb_signed_repair_probability: float = 0.75
 
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
@@ -128,6 +139,8 @@ class GAConfig:
             raise ValueError("lr_delta must be in (0, 1).")
         if self.lr_expected_edges is not None and self.lr_expected_edges < 1:
             raise ValueError("lr_expected_edges must be positive or None.")
+        if self.lr_refit_expected_edges is not None and self.lr_refit_expected_edges < 1:
+            raise ValueError("lr_refit_expected_edges must be positive or None.")
         if self.lr_min_samples_c <= 0:
             raise ValueError("lr_min_samples_c must be positive.")
         if self.lr_stability_subsamples < 0:
@@ -140,6 +153,10 @@ class GAConfig:
             raise ValueError("lr_edge_top_k must be positive or None.")
         if self.bb_weight_mode not in {"absolute", "signed", "positive"}:
             raise ValueError("bb_weight_mode must be one of: absolute, signed, positive.")
+        if self.bb_search_mode not in {"none", "uniform", "pattern_refine"}:
+            raise ValueError("bb_search_mode must be one of: none, uniform, pattern_refine.")
+        if self.bb_search_mode != "none" and self.ga_type not in (1, 2, 3):
+            raise ValueError("bb_search_mode requires a linkage-capable ga_type: 1, 2, or 3.")
         if self.bb_gawll_update_interval is not None and self.bb_gawll_update_interval < 1:
             raise ValueError("bb_gawll_update_interval must be None or at least 1.")
         if self.bb_min_block_size < 2:
@@ -154,6 +171,20 @@ class GAConfig:
             raise ValueError("bb_external_penalty must be non-negative.")
         if self.bb_size_penalty < 0:
             raise ValueError("bb_size_penalty must be non-negative.")
+        if not 0.0 < self.bb_pattern_top_fraction <= 1.0:
+            raise ValueError("bb_pattern_top_fraction must be in (0, 1].")
+        if self.bb_pattern_min_support < 1:
+            raise ValueError("bb_pattern_min_support must be at least 1.")
+        if not 0.0 < self.bb_refine_fraction <= 1.0:
+            raise ValueError("bb_refine_fraction must be in (0, 1].")
+        if self.bb_max_refine_trials is not None and self.bb_max_refine_trials < 1:
+            raise ValueError("bb_max_refine_trials must be None or positive.")
+        if not 0.0 <= self.bb_signed_repair_probability <= 1.0:
+            raise ValueError("bb_signed_repair_probability must be in [0, 1].")
+
+    @property
+    def _regression_stage_for_validation(self) -> str | None:
+        return {2: "pairwise_lasso", 3: "main_pairwise_lasso"}.get(self.ga_type)
 
     @property
     def knn_k(self) -> int:

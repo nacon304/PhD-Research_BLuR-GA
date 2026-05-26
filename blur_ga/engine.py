@@ -15,6 +15,7 @@ from .building_blocks import (
 from .evaluator import FitnessEvaluator
 from .evig import EmpiricalVIG
 from .lr_linkage import RegressionLinkageLearner, RegressionVIG, ga_type_to_regression_stage
+from .bb_search import BuildingBlockVariation
 
 _EPS = 1e-12
 
@@ -83,7 +84,22 @@ class GeneticFeatureSelector:
         self.building_blocks: list[dict[str, float | int | str]] = []
         self._latest_building_block_snapshot: BuildingBlockSnapshot | None = None
         self._bb_extractor: LTGABuildingBlockExtractor | None = None
-        if self.config.build_building_blocks:
+        self._bb_variation: BuildingBlockVariation | None = None
+        if self._bb_search_enabled():
+            self._bb_variation = BuildingBlockVariation(
+                rng=self.rng,
+                n_features=self.n_features,
+                mode=self.config.bb_search_mode,
+                weight_mode=self.config.bb_weight_mode,
+                pattern_top_fraction=self.config.bb_pattern_top_fraction,
+                pattern_min_support=self.config.bb_pattern_min_support,
+                refine_fraction=self.config.bb_refine_fraction,
+                max_refine_trials_per_generation=self.config.bb_max_refine_trials,
+                accept_equal_sparser=self.config.bb_accept_equal_sparser,
+                shuffle_blocks=self.config.bb_shuffle_blocks,
+                signed_repair_probability=self.config.bb_signed_repair_probability,
+            )
+        if self.config.build_building_blocks or self._bb_search_enabled():
             self._bb_extractor = LTGABuildingBlockExtractor(
                 LTGABuildingBlockConfig(
                     enabled=True,
@@ -152,22 +168,31 @@ class GeneticFeatureSelector:
             if self.config.ga_type == 1:
                 assert isinstance(evig, EmpiricalVIG)
                 self.population = self._next_generation_empirical_linkage(evig, generation=generation)
+                self._capture_building_blocks(evig, generation)
+                if self.config.bb_search_mode == "pattern_refine":
+                    self.population = self._refine_population_with_patterns(self.population)
                 if self.config.save_graph_snapshots and generation % self.config.graph_snapshot_interval == 0:
                     self._capture_graph_snapshot(evig, generation)
-                # Empirical/GAwLL linkage is updated online by linkage mutation;
-                # use a dedicated interval for LTGA diagnostics.
-                self._capture_building_blocks(evig, generation)
             elif self._regression_stage is not None:
                 assert isinstance(evig, RegressionVIG)
-                self.population = self._next_generation_standard()
                 lr_updated = False
-                if generation % self.config.lr_gap_gen == 0:
-                    lr_updated = self._fit_regression_graph(evig, generation)
+                if self._bb_search_enabled():
+                    # BB search uses the most recent LR graph.  Refit first,
+                    # rebuild blocks if the graph changed, then generate offspring.
+                    if generation % self.config.lr_gap_gen == 0:
+                        lr_updated = self._fit_regression_graph(evig, generation)
+                    if lr_updated:
+                        self._capture_building_blocks(evig, generation, force=True)
+                    self.population = self._next_generation_building_block()
+                else:
+                    self.population = self._next_generation_standard()
+                    if generation % self.config.lr_gap_gen == 0:
+                        lr_updated = self._fit_regression_graph(evig, generation)
                 if self.config.save_graph_snapshots and generation % self.config.graph_snapshot_interval == 0:
                     self._capture_graph_snapshot(evig, generation)
-                # For type 2/3, LTGA is only rebuilt when the LR linkage graph
-                # has actually been refit and pushed into RegressionVIG.
-                if lr_updated:
+                # For type 2/3 diagnostics, rebuild only when the LR graph has
+                # actually been refit and no BB-search rebuild already happened.
+                if lr_updated and not self._bb_search_enabled():
                     self._capture_building_blocks(evig, generation, force=True)
             else:
                 self.population = self._next_generation_standard()
@@ -225,7 +250,7 @@ class GeneticFeatureSelector:
             self._archive_generations.append(int(self._current_generation))
         return fitness
 
-    def _effective_lr_min_samples(self) -> int:
+    def _effective_lr_min_samples(self, *, refit: bool = False) -> int:
         """Return the archive-size threshold used before fitting regression linkage.
 
         For ga_type 2/3, this implements the PSLE/MPSLE scaling
@@ -234,15 +259,30 @@ class GeneticFeatureSelector:
         Older regression stages keep the original fixed lr_min_samples behavior.
         """
         base = int(self.config.lr_min_samples)
+
         if not self.config.lr_auto_min_samples:
             return base
         if self._regression_stage not in {"pairwise_lasso", "main_pairwise_lasso"}:
             return base
+
         p_cols = max(1, self.n_features * (self.n_features - 1) // 2)
-        s_hat = int(self.config.lr_expected_edges) if self.config.lr_expected_edges is not None else 1
+
+        if refit and self.config.lr_refit_expected_edges is not None:
+            expected_edges = self.config.lr_refit_expected_edges
+        else:
+            expected_edges = self.config.lr_expected_edges
+
+        s_hat = int(expected_edges) if expected_edges is not None else 1
         s_hat = max(1, min(s_hat, p_cols))
         delta = min(max(float(self.config.lr_delta), 1e-12), 1.0 - 1e-12)
-        theory_min = int(np.ceil(float(self.config.lr_min_samples_c) * s_hat * np.log((2.0 * p_cols) / delta)))
+        theory_min = int(
+            np.ceil(
+                float(self.config.lr_min_samples_c)
+                * s_hat
+                * np.log((2.0 * p_cols) / delta)
+            )
+        )
+
         return max(2, base, theory_min)
 
     def _archive_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -260,8 +300,12 @@ class GeneticFeatureSelector:
         """Fit the regression linkage model and return True only on a real graph update."""
         if self._lr_learner is None:
             return False
+        
         archive_size = len(self._archive_chromosomes)
-        if archive_size - self._last_lr_archive_size < self._effective_lr_min_samples() and not force:
+        has_previous_lr_fit = self._last_lr_archive_size > 0
+        required_new_samples = self._effective_lr_min_samples(refit=has_previous_lr_fit)
+
+        if archive_size - self._last_lr_archive_size < required_new_samples and not force:
             return False
         if archive_size == self._last_lr_archive_size and evig.last_n_samples == archive_size:
             evig.touch_fit_metadata(generation, archive_size)
@@ -324,6 +368,12 @@ class GeneticFeatureSelector:
             "bb_negative_edges_in_blocks": int(self._latest_building_block_snapshot.n_negative_edges_in_blocks) if self._latest_building_block_snapshot else 0,
             "bb_mean_signed_balance": float(self._latest_building_block_snapshot.mean_signed_balance) if self._latest_building_block_snapshot else 0.0,
             "bb_sign_conflicts_in_blocks": int(self._latest_building_block_snapshot.n_sign_conflicts_in_blocks) if self._latest_building_block_snapshot else 0,
+            "bb_search_mode": self.config.bb_search_mode,
+            "bb_mix_trials": int(self._bb_variation.stats.trials) if self._bb_variation else 0,
+            "bb_mix_accepts": int(self._bb_variation.stats.accepts) if self._bb_variation else 0,
+            "bb_mix_accept_rate": float(self._bb_variation.stats.accept_rate) if self._bb_variation else 0.0,
+            "bb_mix_fitness_gain": float(self._bb_variation.stats.fitness_gain) if self._bb_variation else 0.0,
+            "bb_mix_size_reduction": int(self._bb_variation.stats.size_reduction) if self._bb_variation else 0,
             "best_population_chromosome": "".join(str(int(v)) for v in best_pop_chrom),
             "best_so_far_chromosome": "".join(str(int(v)) for v in best_so_far_chrom),
             "best_population_selected_features": ";".join(str(int(i)) for i in np.flatnonzero(best_pop_chrom == 1)),
@@ -399,13 +449,21 @@ class GeneticFeatureSelector:
             return
         snapshot = self._bb_extractor.extract(LinkageGraphView.from_evig(evig), generation=generation)
         self._latest_building_block_snapshot = snapshot
-        self.building_block_summaries.append(snapshot.summary_row())
+        summary = snapshot.summary_row()
+        summary["bb_search_mode"] = self.config.bb_search_mode
+        summary["bb_mix_trials"] = int(self._bb_variation.stats.trials) if self._bb_variation else 0
+        summary["bb_mix_accepts"] = int(self._bb_variation.stats.accepts) if self._bb_variation else 0
+        summary["bb_mix_accept_rate"] = float(self._bb_variation.stats.accept_rate) if self._bb_variation else 0.0
+        summary["bb_mix_fitness_gain"] = float(self._bb_variation.stats.fitness_gain) if self._bb_variation else 0.0
+        summary["bb_mix_size_reduction"] = int(self._bb_variation.stats.size_reduction) if self._bb_variation else 0
+        self.building_block_summaries.append(summary)
         for block in snapshot.blocks:
             self.building_blocks.append(
                 {
                     "generation": int(generation),
                     "bb_method": "ltga",
                     "bb_weight_mode": snapshot.mode,
+                    "bb_search_mode": self.config.bb_search_mode,
                     "block_id": int(block.block_id),
                     "features": block.features_str,
                     "size": int(block.size),
@@ -522,6 +580,125 @@ class GeneticFeatureSelector:
                 new_pop.append(self._make_individual(self._mutate(p1)))
         return new_pop[: self.config.popsize]
 
+    def _bb_search_enabled(self) -> bool:
+        return self.config.bb_search_mode != "none"
+
+    def _building_block_uniform_crossover(self, p1: np.ndarray, p2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self._bb_variation is None:
+            return self._uniform_crossover(p1, p2)
+        return self._bb_variation.block_uniform_crossover(p1, p2, self._latest_building_block_snapshot)
+
+    def _next_generation_bb_uniform(self) -> list[Individual]:
+        elite = max(self.population, key=lambda ind: ind.fitness).copy()
+        new_pop: list[Individual] = [elite]
+        while len(new_pop) < self.config.popsize:
+            p1 = self._tournament().chromosome
+            if len(new_pop) < self.config.popsize - 1:
+                p2 = self._tournament().chromosome
+                if self.rng.random() < self.config.crossover_probability:
+                    c1, c2 = self._building_block_uniform_crossover(p1, p2)
+                else:
+                    c1, c2 = p1.copy(), p2.copy()
+                new_pop.append(self._make_individual(self._mutate(c1)))
+                new_pop.append(self._make_individual(self._mutate(c2)))
+            else:
+                new_pop.append(self._make_individual(self._mutate(p1)))
+        return new_pop[: self.config.popsize]
+
+    def _has_current_building_blocks(self) -> bool:
+        """Return True only when the latest LTGA snapshot contains usable blocks."""
+        return bool(
+            self._latest_building_block_snapshot is not None
+            and self._latest_building_block_snapshot.blocks
+        )
+
+    def _archive_top_matrix(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._bb_variation is None or not self._archive_chromosomes:
+            return np.empty((0, self.n_features), dtype=np.int8), np.empty(0, dtype=float)
+        X, y, _ = self._archive_arrays()
+        return self._bb_variation.archive_top_matrix(X, y)
+
+    def _pattern_refine_individual(
+        self,
+        individual: Individual,
+        X_top: np.ndarray,
+        y_top: np.ndarray,
+        *,
+        remaining_trials: int,
+    ) -> tuple[Individual, int]:
+        if self._bb_variation is None or self._latest_building_block_snapshot is None:
+            return individual.copy(), remaining_trials
+        current = individual.chromosome.copy()
+        current_fitness = float(individual.fitness)
+        for block in self._bb_variation.ordered_blocks(self._latest_building_block_snapshot):
+            if remaining_trials <= 0:
+                break
+            idx = np.asarray(block.features, dtype=int)
+            pattern = self._bb_variation.learn_block_pattern(block, X_top, y_top)
+            if pattern is None or idx.size == 0 or np.array_equal(current[idx], pattern):
+                continue
+            trial = current.copy()
+            trial[idx] = pattern
+            if not np.any(trial):
+                continue
+            trial_fitness = self._evaluate(trial)
+            remaining_trials -= 1
+            accepted = self._bb_variation.accept_block_mix(trial_fitness, current_fitness, trial, current)
+            self._bb_variation.stats.record(
+                accepted=accepted,
+                old_fitness=current_fitness,
+                new_fitness=trial_fitness,
+                old_chromosome=current,
+                new_chromosome=trial,
+            )
+            if accepted:
+                current = trial
+                current_fitness = trial_fitness
+        return Individual(current.astype(np.int8), float(current_fitness)), remaining_trials
+
+    def _refine_population_with_patterns(self, base_pop: list[Individual]) -> list[Individual]:
+        """Apply pattern-refine only when blocks/patterns exist; otherwise keep the base GA output.
+
+        This is the pattern-refine equivalent of ``block_uniform_crossover``'s
+        no-block fallback.  The caller first creates offspring with the normal
+        GA operator for that GA type.  If LTGA has not produced any usable block
+        yet, or the archive is still empty, this method returns that population
+        unchanged instead of failing or inventing a dummy block.
+        """
+        if self._bb_variation is None or not self._has_current_building_blocks():
+            return [ind.copy() for ind in base_pop]
+
+        X_top, y_top = self._archive_top_matrix()
+        if X_top.size == 0:
+            return [ind.copy() for ind in base_pop]
+
+        sorted_pop = sorted(base_pop, key=lambda ind: (ind.fitness, -int(np.sum(ind.chromosome))), reverse=True)
+        n_refine = self._bb_variation.n_individuals_to_refine(len(sorted_pop))
+        remaining = self._bb_variation.max_trials_this_generation(len(sorted_pop))
+        refined: list[Individual] = []
+        for ind in sorted_pop[:n_refine]:
+            if remaining <= 0:
+                refined.append(ind.copy())
+                continue
+            new_ind, remaining = self._pattern_refine_individual(ind, X_top, y_top, remaining_trials=remaining)
+            refined.append(new_ind)
+        combined = refined + [ind.copy() for ind in sorted_pop[n_refine:]]
+        combined.sort(key=lambda ind: (ind.fitness, -int(np.sum(ind.chromosome))), reverse=True)
+        return combined[: self.config.popsize]
+
+    def _next_generation_pattern_refine(self) -> list[Individual]:
+        # First make a normal standard-GA generation.  Pattern refine is an
+        # optional post-processing step; if no blocks exist, the standard-GA
+        # offspring are returned unchanged.
+        return self._refine_population_with_patterns(self._next_generation_standard())
+
+    def _next_generation_building_block(self) -> list[Individual]:
+        if self.config.bb_search_mode == "uniform":
+            return self._next_generation_bb_uniform()
+        if self.config.bb_search_mode == "pattern_refine":
+            return self._next_generation_pattern_refine()
+        return self._next_generation_standard()
+
     def _next_generation_empirical_linkage(self, evig: EmpiricalVIG, *, generation: int) -> list[Individual]:
         elite = max(self.population, key=lambda ind: ind.fitness).copy()
         new_pop: list[Individual] = [elite]
@@ -530,7 +707,10 @@ class GeneticFeatureSelector:
             p1 = self._tournament()
             if len(new_pop) < crossover_quota and len(new_pop) < self.config.popsize - 1:
                 p2 = self._tournament()
-                c1, c2 = self._uniform_crossover(p1.chromosome, p2.chromosome)
+                if self.config.bb_search_mode == "uniform":
+                    c1, c2 = self._building_block_uniform_crossover(p1.chromosome, p2.chromosome)
+                else:
+                    c1, c2 = self._uniform_crossover(p1.chromosome, p2.chromosome)
                 new_pop.append(self._make_individual(self._mutate(c1)))
                 new_pop.append(self._make_individual(self._mutate(c2)))
             elif len(new_pop) < self.config.popsize - 2:

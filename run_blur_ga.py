@@ -106,13 +106,19 @@ METHOD_FOLDER_NAMES: dict[int, str] = {
 }
 
 
-def method_folder_name(ga_type: int) -> str:
+def method_folder_name(ga_type: int, *, bb_search_mode: str = "none", bb_weight_mode: str = "absolute") -> str:
     """Human-readable method folder used under --output-root.
 
     File names keep the compact _a<ga_type> suffix, while directories use
-    descriptive method labels.
+    descriptive method labels.  When a BB-search operator is active, the folder
+    name is suffixed so uniform and pattern_refine runs do not overwrite each
+    other even if they share the same ga_type.
     """
-    return METHOD_FOLDER_NAMES.get(int(ga_type), f"method_{int(ga_type)}")
+    base = METHOD_FOLDER_NAMES.get(int(ga_type), f"method_{int(ga_type)}")
+    mode = str(bb_search_mode or "none").strip().lower()
+    if int(ga_type) in {2, 3} and mode != "none":
+        return f"{base}_{mode}_{str(bb_weight_mode).strip().lower()}"
+    return base
 
 
 def available_datasets(data_dir: Path) -> list[str]:
@@ -120,12 +126,12 @@ def available_datasets(data_dir: Path) -> list[str]:
         raise FileNotFoundError(f"data_dir not found: {data_dir}")
     names: list[str] = []
     for child in sorted(data_dir.iterdir()):
-        if child.is_dir() and (child / "dataset.npz").exists():
+        if child.is_dir() and ((child / "dataset.npz").exists() or ((child / "X_preprocessed.csv").exists() and (child / "y.csv").exists())):
             names.append(child.name)
         elif child.is_file() and child.suffix == ".dat":
             names.append(child.stem)
     if not names:
-        raise FileNotFoundError(f"No datasets found in {data_dir}. Expected subfolders with dataset.npz or .dat files.")
+        raise FileNotFoundError(f"No datasets found in {data_dir}. Expected subfolders with dataset.npz, X_preprocessed.csv + y.csv, or .dat files.")
     return names
 
 
@@ -139,10 +145,25 @@ def read_dataset_file(path: Path) -> list[str]:
     return names
 
 
+def read_dataset_group(data_dir: Path, group_name: str) -> list[str]:
+    group_path = data_dir / "dataset_groups" / f"{group_name}.txt"
+    if not group_path.exists():
+        available = sorted(p.stem for p in (data_dir / "dataset_groups").glob("*.txt")) if (data_dir / "dataset_groups").exists() else []
+        raise FileNotFoundError(
+            f"Dataset group {group_name!r} not found at {group_path}. "
+            f"Available groups: {available or 'none'}"
+        )
+    return read_dataset_file(group_path)
+
+
 def resolve_datasets(args: argparse.Namespace) -> list[str]:
-    all_names = available_datasets(Path(args.data_dir))
+    data_dir = Path(args.data_dir)
+    all_names = available_datasets(data_dir)
+    dataset_group = getattr(args, "dataset_group", None)
     if args.dataset_file:
         requested = read_dataset_file(Path(args.dataset_file))
+    elif dataset_group:
+        requested = read_dataset_group(data_dir, str(dataset_group))
     elif args.datasets == ["all"]:
         requested = all_names
     else:
@@ -208,7 +229,8 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_alpha_c": 0.2,
         "lr_delta": 0.05,
         "lr_auto_min_samples": True,
-        "lr_expected_edges": 20,
+        "lr_expected_edges": 60,
+        "lr_refit_expected_edges": 30,
         "lr_min_samples_c": 2.0,
         "lr_stability_subsamples": 0,
         "lr_stability_fraction": 0.75,
@@ -218,6 +240,7 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "write_aggregate_outputs": True,
         "build_building_blocks": False,
         "bb_weight_mode": "absolute",
+        "bb_search_mode": "none",
         "bb_gawll_update_interval": None,
         "bb_min_block_size": 2,
         "bb_max_block_size": None,
@@ -225,6 +248,13 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "bb_snapshot_interval": 1,
         "bb_external_penalty": 0.25,
         "bb_size_penalty": 0.01,
+        "bb_pattern_top_fraction": 0.30,
+        "bb_pattern_min_support": 2,
+        "bb_refine_fraction": 0.20,
+        "bb_max_refine_trials": 10,
+        "bb_accept_equal_sparser": True,
+        "bb_shuffle_blocks": True,
+        "bb_signed_repair_probability": 0.75,
     }
     for key, value in defaults.items():
         if hasattr(args, key) and getattr(args, key) is None:
@@ -238,7 +268,11 @@ def build_jobs(args: argparse.Namespace, *, split_folds: bool) -> list[Job]:
     for dataset in datasets:
         for classifier in args.classifiers:
             for ga_type in args.ga_types:
-                out_dir = Path(args.output_root) / dataset / method_folder_name(int(ga_type))
+                out_dir = Path(args.output_root) / dataset / method_folder_name(
+                    int(ga_type),
+                    bb_search_mode=str(getattr(args, "bb_search_mode", "none")),
+                    bb_weight_mode=str(getattr(args, "bb_weight_mode", "absolute")),
+                )
                 if split_folds:
                     for rep in range(args.repeats):
                         for fold in range(args.outer_folds):
@@ -249,6 +283,14 @@ def build_jobs(args: argparse.Namespace, *, split_folds: bool) -> list[Job]:
 
 
 def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
+    # Batch-level BB flags are global, but standard GA (ga_type=0) has no
+    # linkage graph and therefore cannot consume BB search operators.  Normalize
+    # them per job so mixed batches such as ``--ga-types 0 1 2 3`` can compare
+    # standard GA against BB-aware methods without failing configuration checks.
+    linkage_capable = job.ga_type in (1, 2, 3)
+    build_building_blocks = bool(args.build_building_blocks) and linkage_capable
+    bb_search_mode = str(args.bb_search_mode) if linkage_capable else "none"
+
     cmd = [
         str(job.dataset),
         str(job.classifier),
@@ -285,13 +327,20 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
-        "--build-building-blocks", str(bool(args.build_building_blocks)).lower(),
+        "--build-building-blocks", str(build_building_blocks).lower(),
         "--bb-weight-mode", str(args.bb_weight_mode),
+        "--bb-search-mode", bb_search_mode,
         "--bb-min-block-size", str(args.bb_min_block_size),
         "--bb-max-blocks", str(args.bb_max_blocks),
         "--bb-snapshot-interval", str(args.bb_snapshot_interval),
         "--bb-external-penalty", str(args.bb_external_penalty),
         "--bb-size-penalty", str(args.bb_size_penalty),
+        "--bb-pattern-top-fraction", str(args.bb_pattern_top_fraction),
+        "--bb-pattern-min-support", str(args.bb_pattern_min_support),
+        "--bb-refine-fraction", str(args.bb_refine_fraction),
+        "--bb-accept-equal-sparser", str(bool(args.bb_accept_equal_sparser)).lower(),
+        "--bb-shuffle-blocks", str(bool(args.bb_shuffle_blocks)).lower(),
+        "--bb-signed-repair-probability", str(args.bb_signed_repair_probability),
         "--artifact-layout", str(args.artifact_layout),
         "--write-aggregate-outputs", str(bool(args.write_aggregate_outputs)).lower(),
     ]
@@ -303,8 +352,10 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         ("--graph-snapshot-top-k", args.graph_snapshot_top_k),
         ("--lr-edge-top-k", args.lr_edge_top_k),
         ("--lr-expected-edges", args.lr_expected_edges),
+        ("--lr-refit-expected-edges", args.lr_refit_expected_edges),
         ("--bb-gawll-update-interval", args.bb_gawll_update_interval),
         ("--bb-max-block-size", args.bb_max_block_size),
+        ("--bb-max-refine-trials", args.bb_max_refine_trials),
     ]
     for flag, value in optional_pairs:
         if value is not None:
@@ -327,12 +378,13 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--data-dir", required=True)
     p.add_argument("--output-root", required=True)
     p.add_argument("--datasets", nargs="+", default=["all"], help="Dataset names, or 'all'.")
+    p.add_argument("--dataset-group", default=None, help="Read dataset names from <data-dir>/dataset_groups/<group>.txt, e.g. small, medium, highdim, all.")
     p.add_argument("--dataset-file", default=None, help="Text/CSV file; first comma-separated field is treated as dataset name.")
     p.add_argument("--exclude-datasets", nargs="*", default=[])
     p.add_argument("--limit-datasets", type=int, default=None)
     p.add_argument("--classifiers", nargs="+", type=int, default=None)
     p.add_argument("--ga-types", nargs="+", type=int, default=None)
-    p.add_argument("--repeats", type=int, default=None)
+    p.add_argument("--repeats", "--repeat", dest="repeats", type=int, default=None)
     p.add_argument("--outer-folds", type=int, default=None)
     p.add_argument("--inner-folds", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
@@ -365,6 +417,7 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-delta", type=float, default=None)
     p.add_argument("--lr-auto-min-samples", type=str2bool, default=None)
     p.add_argument("--lr-expected-edges", type=int, default=None)
+    p.add_argument("--lr-refit-expected-edges", type=int, default=None)
     p.add_argument("--lr-min-samples-c", type=float, default=None)
     p.add_argument("--lr-stability-subsamples", type=int, default=None)
     p.add_argument("--lr-stability-fraction", type=float, default=None)
@@ -372,6 +425,7 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-edge-top-k", type=int, default=None)
     p.add_argument("--build-building-blocks", type=str2bool, default=None)
     p.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default=None)
+    p.add_argument("--bb-search-mode", choices=["none", "uniform", "pattern_refine"], default=None)
     p.add_argument("--bb-gawll-update-interval", type=int, default=None)
     p.add_argument("--bb-min-block-size", type=int, default=None)
     p.add_argument("--bb-max-block-size", type=int, default=None)
@@ -379,6 +433,13 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bb-snapshot-interval", type=int, default=None)
     p.add_argument("--bb-external-penalty", type=float, default=None)
     p.add_argument("--bb-size-penalty", type=float, default=None)
+    p.add_argument("--bb-pattern-top-fraction", type=float, default=None)
+    p.add_argument("--bb-pattern-min-support", type=int, default=None)
+    p.add_argument("--bb-refine-fraction", type=float, default=None)
+    p.add_argument("--bb-max-refine-trials", type=int, default=None)
+    p.add_argument("--bb-accept-equal-sparser", type=str2bool, default=None)
+    p.add_argument("--bb-shuffle-blocks", type=str2bool, default=None)
+    p.add_argument("--bb-signed-repair-probability", type=float, default=None)
     p.add_argument("--artifact-layout", choices=["both", "nested", "root"], default=None)
     p.add_argument("--write-aggregate-outputs", type=str2bool, default=None)
 
@@ -675,59 +736,78 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# python run_blur_ga.py batch `
-#   --preset analysis `
-#   --data-dir ../Dataset/prepared_tabarena `
-#   --output-root ../Results/results_analysis_test_v2 `
-#   --datasets anneal_task363614 `
-#   --classifiers 2 `
-#   --ga-types 1 2 3 `
-#   --repeat 1 `
-#   --inner-folds 2 `
-#   --outer-folds 2 `
-#   --lr-gap-gen 1 `
-#   --lr-min-samples 10 `
-#   --lr-auto-alpha true `
-#   --lr-alpha-c 0.2 `
-#   --lr-delta 0.05 `
-#   --lr-auto-min-samples true `
-#   --lr-expected-edges 50 `
-#   --lr-min-samples-c 2.0 `
-#   --build-building-blocks true `
-#   --bb-weight-mode signed `
-#   --bb-gawll-update-interval 10 `
-#   --save-generation-trace true `
-#   --save-graph-snapshots true `
-#   --graph-snapshot-interval 1
+"""
+python run_blur_ga.py batch `
+  --preset analysis `
+  --data-dir ../Dataset/prepared_feature_selection `
+  --output-root ../Results/results_analysis_med_high `
+  --dataset-group medium_highdim `
+  --classifiers 2 `
+  --ga-types 0 1 2 3 `
+  --repeat 1 `
+  --inner-folds 4 `
+  --outer-folds 4 `
+  --bb-pattern-top-fraction 0.20 `
+  --build-building-blocks true `
+  --bb-weight-mode positive `
+  --bb-search-mode pattern_refine `
+  --bb-gawll-update-interval 10 `
+  --save-generation-trace true `
+  --save-graph-snapshots false `
+  --save-linkage-events false `
+  --artifact-layout nested `
+  --write-aggregate-outputs false
 
-# python run_blur_ga.py aggregate --results-root ../Results/results_analysis_test_v2
+python run_blur_ga.py batch `
+  --preset analysis `
+  --data-dir ../Dataset/prepared_feature_selection `
+  --output-root ../Results/results_analysis_med_high_2 `
+  --dataset-group medium_highdim `
+  --classifiers 2 `
+  --ga-types 1 2 3 `
+  --repeat 1 `
+  --inner-folds 4 `
+  --outer-folds 4 `
+  --bb-pattern-top-fraction 0.20 `
+  --build-building-blocks true `
+  --bb-weight-mode positive `
+  --bb-search-mode uniform `
+  --bb-gawll-update-interval 10 `
+  --save-generation-trace true `
+  --save-graph-snapshots false `
+  --save-linkage-events false `
+  --artifact-layout nested `
+  --write-aggregate-outputs false
 
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_snapshots_c2_a1_rep00_fold00_run000.csv `
-#   --trace ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
-#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
-#   --run-id 0 `
-#   --output ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
-#   --layout-k-scale 2.0 `
-#   --initial-spacing 1.25 `
-#   --layout spring
+python run_blur_ga.py aggregate --results-root ../Results/results_analysis_test_v2
 
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_snapshots_c2_a2_rep00_fold00_run000.csv `
-#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a2.csv `
-#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a2.csv `
-#   --run-id 0 `
-#   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
-#   --layout-k-scale 2.0 `
-#   --initial-spacing 1.25 `
-#   --layout spring
+python analysis_interactive/make_graph_ui.py `
+  --snapshots ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_snapshots_c2_a1_rep00_fold00_run000.csv `
+  --trace ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
+  --selected-features ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
+  --run-id 0 `
+  --output ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_evolution_ui.html `
+  --layout-k-scale 2.0 `
+  --initial-spacing 1.25 `
+  --layout spring
 
-# python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_snapshots_c2_a3_rep00_fold00_run000.csv `
-#   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a3.csv `
-#   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a3.csv `
-#   --run-id 0 `
-#   --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
-#   --layout-k-scale 2.0 `
-#   --initial-spacing 1.25 `
-#   --layout spring
+python analysis_interactive/make_graph_ui.py `
+  --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_snapshots_c2_a2_rep00_fold00_run000.csv `
+  --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a2.csv `
+  --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a2.csv `
+  --run-id 0 `
+  --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_evolution_ui.html `
+  --layout-k-scale 2.0 `
+  --initial-spacing 1.25 `
+  --layout spring
+
+python analysis_interactive/make_graph_ui.py `
+  --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_snapshots_c2_a3_rep00_fold00_run000.csv `
+  --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a3.csv `
+  --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a3.csv `
+  --run-id 0 `
+  --output ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_evolution_ui.html `
+  --layout-k-scale 2.0 `
+  --initial-spacing 1.25 `
+  --layout spring
+"""

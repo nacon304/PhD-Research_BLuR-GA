@@ -400,14 +400,15 @@ class ResultWriter:
                 self.output_dir / self._artifact_name("building_blocks", row, root_level=True),
             ))
         summary_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
             "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
             "max_block_size", "mean_score", "max_score", "mean_internal_abs",
             "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
             "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
+            "bb_mix_trials", "bb_mix_accepts", "bb_mix_accept_rate", "bb_mix_fitness_gain", "bb_mix_size_reduction",
         ]
         block_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
             "block_id", "features", "size", "score", "density", "internal_abs_mean",
             "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
             "n_internal_edges", "n_positive_edges", "n_negative_edges",
@@ -426,6 +427,7 @@ class ResultWriter:
                             int(item.get("generation", 0)),
                             item.get("bb_method", "ltga"),
                             item.get("bb_weight_mode", ""),
+                            item.get("bb_search_mode", "none"),
                             int(item.get("n_features", 0)),
                             int(item.get("n_graph_edges", 0)),
                             int(item.get("n_candidates", 0)),
@@ -441,6 +443,11 @@ class ResultWriter:
                             int(item.get("n_positive_edges_in_blocks", 0)),
                             int(item.get("n_negative_edges_in_blocks", 0)),
                             int(item.get("n_sign_conflicts_in_blocks", 0)),
+                            int(item.get("bb_mix_trials", 0)),
+                            int(item.get("bb_mix_accepts", 0)),
+                            f"{float(item.get('bb_mix_accept_rate', 0.0)):.14f}",
+                            f"{float(item.get('bb_mix_fitness_gain', 0.0)):.14f}",
+                            int(item.get("bb_mix_size_reduction", 0)),
                         ])
             if blocks:
                 with block_path.open("w", newline="", encoding="utf-8") as f:
@@ -452,6 +459,7 @@ class ResultWriter:
                             int(item.get("generation", 0)),
                             item.get("bb_method", "ltga"),
                             item.get("bb_weight_mode", ""),
+                            item.get("bb_search_mode", "none"),
                             int(item.get("block_id", 0)),
                             item.get("features", ""),
                             int(item.get("size", 0)),
@@ -479,14 +487,15 @@ class ResultWriter:
         summary_path = self.output_dir / f"building_block_summary_{self.prefix}.csv"
         block_path = self.output_dir / f"building_blocks_{self.prefix}.csv"
         summary_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
             "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
             "max_block_size", "mean_score", "max_score", "mean_internal_abs",
             "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
             "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
+            "bb_mix_trials", "bb_mix_accepts", "bb_mix_accept_rate", "bb_mix_fitness_gain", "bb_mix_size_reduction",
         ]
         block_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
             "block_id", "features", "size", "score", "density", "internal_abs_mean",
             "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
             "n_internal_edges", "n_positive_edges", "n_negative_edges",
@@ -502,7 +511,7 @@ class ResultWriter:
                 for item in row.run_result.building_block_summaries:
                     writer.writerow([
                         row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
-                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""),
+                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""), item.get("bb_search_mode", "none"),
                         int(item.get("n_features", 0)), int(item.get("n_graph_edges", 0)),
                         int(item.get("n_candidates", 0)), int(item.get("n_blocks", 0)),
                         f"{float(item.get('mean_block_size', 0.0)):.14f}", int(item.get("max_block_size", 0)),
@@ -514,6 +523,11 @@ class ResultWriter:
                         int(item.get("n_positive_edges_in_blocks", 0)),
                         int(item.get("n_negative_edges_in_blocks", 0)),
                         int(item.get("n_sign_conflicts_in_blocks", 0)),
+                        int(item.get("bb_mix_trials", 0)),
+                        int(item.get("bb_mix_accepts", 0)),
+                        f"{float(item.get('bb_mix_accept_rate', 0.0)):.14f}",
+                        f"{float(item.get('bb_mix_fitness_gain', 0.0)):.14f}",
+                        int(item.get("bb_mix_size_reduction", 0)),
                     ])
         with block_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -524,7 +538,7 @@ class ResultWriter:
                 for item in row.run_result.building_blocks:
                     writer.writerow([
                         row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
-                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""),
+                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""), item.get("bb_search_mode", "none"),
                         int(item.get("block_id", 0)), item.get("features", ""), int(item.get("size", 0)),
                         f"{float(item.get('score', 0.0)):.14f}", f"{float(item.get('density', 0.0)):.14f}",
                         f"{float(item.get('internal_abs_mean', 0.0)):.14f}",

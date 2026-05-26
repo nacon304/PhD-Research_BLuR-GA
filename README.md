@@ -85,3 +85,8 @@ Main building-block outputs:
 - `analysis_interactive/analyze_building_blocks.py`: plots block counts, score, signed strengths, top blocks, and, when given `--graph-snapshots`, overlays selected blocks on the linkage graph for a chosen generation.
 
 The default local output layout is now `root`, meaning per-run artifacts are kept in the method folder with tags such as `rep00_fold00_run000` instead of deeply nested run folders.  For array jobs, `make-tasks` still forces `nested` output to avoid concurrent file collisions, and `aggregate` rebuilds compact root summaries afterwards.
+
+## Feature-selection evaluation datasets
+
+Use `scripts/prepare_feature_selection_datasets.py` to download/process the small, medium, and high-dimensional datasets used by the feature-selection performance evaluation. The generated folder is directly readable by `run_blur_ga.py`; pass `--dataset-group small`, `--dataset-group medium`, or `--dataset-group highdim` to run one group. See `documents/feature_selection_dataset_preparation.md` for the full workflow.
+
