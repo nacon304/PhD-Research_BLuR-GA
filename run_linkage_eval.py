@@ -138,6 +138,15 @@ def build_ga_config(args: argparse.Namespace, ga_type: int) -> GAConfig:
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
+        build_building_blocks=args.build_building_blocks,
+        bb_weight_mode=args.bb_weight_mode,
+        bb_gawll_update_interval=args.bb_gawll_update_interval,
+        bb_min_block_size=args.bb_min_block_size,
+        bb_max_block_size=args.bb_max_block_size,
+        bb_max_blocks=args.bb_max_blocks,
+        bb_snapshot_interval=args.bb_snapshot_interval,
+        bb_external_penalty=args.bb_external_penalty,
+        bb_size_penalty=args.bb_size_penalty,
     )
 
 
@@ -261,6 +270,10 @@ def aggregate_linkage_results(output_root: str | Path) -> tuple[Path, Path] | No
         "precision", "recall", "f1", "precision_strict",
         "precision_at_k", "recall_at_k", "f1_at_k", "precision_at_k_strict",
         "average_precision", "spearman_abs_weight", "sign_accuracy",
+        "signed_precision", "signed_recall", "signed_f1",
+        "n_sign_eval_edges", "sign_correct_edges", "sign_wrong_edges",
+        "raw_sign_accuracy", "raw_signed_precision", "raw_signed_recall", "raw_signed_f1",
+        "raw_n_sign_eval_edges", "raw_sign_correct_edges", "raw_sign_wrong_edges",
         "n_eval_edges", "n_pred_edges", "true_positives", "false_positives", "false_negatives",
     ]
     numeric = [c for c in numeric_candidates if c in df.columns]
@@ -422,6 +435,15 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-stability-fraction", type=float, default=0.75)
     p.add_argument("--lr-edge-min-weight", type=float, default=0.0)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
+    p.add_argument("--build-building-blocks", type=str2bool, default=False, help="Extract LTGA building-block diagnostics during linkage-eval runs.")
+    p.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default="absolute", help="absolute: cluster by |w|; signed: cluster by |w| and infer same/opposite polarity groups; positive: only positive/same-state edges.")
+    p.add_argument("--bb-gawll-update-interval", type=int, default=None, help="For ga_type=1 only: rebuild LTGA blocks every N generations; defaults to --bb-snapshot-interval.")
+    p.add_argument("--bb-min-block-size", type=int, default=2)
+    p.add_argument("--bb-max-block-size", type=int, default=None)
+    p.add_argument("--bb-max-blocks", type=int, default=20)
+    p.add_argument("--bb-snapshot-interval", type=int, default=1)
+    p.add_argument("--bb-external-penalty", type=float, default=0.25)
+    p.add_argument("--bb-size-penalty", type=float, default=0.01)
 
 
 def build_run_parser() -> argparse.ArgumentParser:
@@ -496,6 +518,13 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
+        "--build-building-blocks", str(bool(args.build_building_blocks)).lower(),
+        "--bb-weight-mode", str(args.bb_weight_mode),
+        "--bb-min-block-size", str(args.bb_min_block_size),
+        "--bb-max-blocks", str(args.bb_max_blocks),
+        "--bb-snapshot-interval", str(args.bb_snapshot_interval),
+        "--bb-external-penalty", str(args.bb_external_penalty),
+        "--bb-size-penalty", str(args.bb_size_penalty),
     ]
     optional_pairs = [
         ("--output-groups", args.output_groups),
@@ -507,6 +536,8 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         ("--graph-snapshot-top-k", args.graph_snapshot_top_k),
         ("--lr-edge-top-k", args.lr_edge_top_k),
         ("--lr-expected-edges", args.lr_expected_edges),
+        ("--bb-gawll-update-interval", args.bb_gawll_update_interval),
+        ("--bb-max-block-size", args.bb_max_block_size),
     ]
     for flag, value in optional_pairs:
         if value is None:
@@ -531,7 +562,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             metrics = run_one(args, row, ga_type, args.repeat_id, args.outer_fold_id)
             if not metrics.empty:
                 all_metrics.append(metrics)
-                cols = [c for c in ["dataset", "method", "eval_scope", "k_requested", "n_eval_edges", "precision", "recall", "f1", "precision_strict", "average_precision", "n_pred_edges"] if c in metrics.columns]
+                cols = [c for c in ["dataset", "method", "eval_scope", "k_requested", "n_eval_edges", "precision", "recall", "f1", "sign_accuracy", "signed_precision", "signed_recall", "signed_f1", "n_pred_edges"] if c in metrics.columns]
                 print(metrics[cols].to_string(index=False))
     if args.write_aggregate_summary:
         summary = aggregate_linkage_results(Path(args.output_root))
@@ -634,6 +665,9 @@ if __name__ == "__main__":
 #   --lr-auto-min-samples true `
 #   --lr-expected-edges 20 `
 #   --lr-min-samples-c 2.0 `
+#   --build-building-blocks true `
+#   --bb-weight-mode signed `
+#   --bb-gawll-update-interval 10 `
 #   --save-generation-trace true `
 #   --save-graph-snapshots true `
 #   --graph-snapshot-interval 1 `
@@ -641,7 +675,7 @@ if __name__ == "__main__":
 #   --k-values 100
 
 # python run_linkage_eval.py aggregate `
-#   --results-root ../Results/results_linkage_test_theory_v3
+#   --results-root ../Results/results_linkage_test_theory_v4
 
 # $RUN = "../Results/results_linkage_test_theory_v3/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_main_pairwise_lasso/rep00/fold00/run000"
 # $RUN = "../Results/results_linkage_test_theory_v3/linkage/maxsat_d35_m90_k3_weighted_seed0/blur_ga_pairwise_lasso/rep00/fold00/run000"

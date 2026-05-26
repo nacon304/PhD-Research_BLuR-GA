@@ -57,3 +57,31 @@ Nested per-run layout is the default for HPC-safe execution:
 ```
 
 File names still include compact suffixes such as `c2_a2`, where `a2` now means pairwise Lasso.
+
+## Optional signed LTGA building-block diagnostics
+
+The active linkage modes `ga_type=1`, `ga_type=2`, and `ga_type=3` can now extract LTGA-style building blocks from the current linkage graph without changing the search operator:
+
+```bash
+python run_blur_ga.py batch \
+  --data-dir ../Dataset/prepared_linkage_benchmark_mini_debug/linkage \
+  --output-root ../Results/results_signed_ltga_blocks \
+  --datasets gametes_style_d30_n800_loci2_maf0.25_seed0 \
+  --classifiers 1 \
+  --ga-types 1 2 3 \
+  --repeats 1 --outer-folds 2 --inner-folds 2 \
+  --popsize 20 --max-gen 5 \
+  --build-building-blocks true \
+  --bb-weight-mode absolute \
+  --bb-snapshot-interval 1
+```
+
+`--bb-weight-mode absolute` clusters by absolute linkage strength while recording both positive and negative signed relationships inside each block. `--bb-weight-mode signed` also uses absolute strength, then checks whether positive edges imply same-state relations and negative edges imply opposite-state relations. `--bb-weight-mode positive` keeps only positive/same-state linkages when building the LTGA tree.
+
+Main building-block outputs:
+
+- `building_block_summary_c*_a*.csv`: compact per-generation diagnostics.
+- `building_blocks_c*_a*.csv`: selected LTGA blocks, capped by `--bb-max-blocks`.
+- `analysis_interactive/analyze_building_blocks.py`: plots block counts, score, signed strengths, top blocks, and, when given `--graph-snapshots`, overlays selected blocks on the linkage graph for a chosen generation.
+
+The default local output layout is now `root`, meaning per-run artifacts are kept in the method folder with tags such as `rep00_fold00_run000` instead of deeply nested run folders.  For array jobs, `make-tasks` still forces `nested` output to avoid concurrent file collisions, and `aggregate` rebuilds compact root summaries afterwards.

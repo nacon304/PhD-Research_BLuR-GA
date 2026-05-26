@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .building_blocks import BBWeightMode
+
 ProblemType = Literal["classification", "regression"]
 StopCriterion = Literal["gen", "time", "eval"]
 ArtifactLayout = Literal["both", "nested", "root"]
@@ -79,6 +81,18 @@ class GAConfig:
     lr_edge_min_weight: float = 0.0
     lr_edge_top_k: int | None = None
 
+    # Optional LTGA-style building-block extraction from the current linkage graph.
+    # This is a diagnostic layer by default; it does not alter crossover/mutation.
+    build_building_blocks: bool = False
+    bb_weight_mode: BBWeightMode = "absolute"
+    bb_gawll_update_interval: int | None = None
+    bb_min_block_size: int = 2
+    bb_max_block_size: int | None = None
+    bb_max_blocks: int = 20
+    bb_snapshot_interval: int = 1
+    bb_external_penalty: float = 0.25
+    bb_size_penalty: float = 0.01
+
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
             raise ValueError("classifier_type must be 1 (KNN-3) or 2 (KNN-5).")
@@ -124,6 +138,22 @@ class GAConfig:
             raise ValueError("lr_edge_min_weight must be non-negative.")
         if self.lr_edge_top_k is not None and self.lr_edge_top_k < 1:
             raise ValueError("lr_edge_top_k must be positive or None.")
+        if self.bb_weight_mode not in {"absolute", "signed", "positive"}:
+            raise ValueError("bb_weight_mode must be one of: absolute, signed, positive.")
+        if self.bb_gawll_update_interval is not None and self.bb_gawll_update_interval < 1:
+            raise ValueError("bb_gawll_update_interval must be None or at least 1.")
+        if self.bb_min_block_size < 2:
+            raise ValueError("bb_min_block_size must be at least 2.")
+        if self.bb_max_block_size is not None and self.bb_max_block_size < self.bb_min_block_size:
+            raise ValueError("bb_max_block_size must be None or >= bb_min_block_size.")
+        if self.bb_max_blocks < 1:
+            raise ValueError("bb_max_blocks must be positive.")
+        if self.bb_snapshot_interval < 1:
+            raise ValueError("bb_snapshot_interval must be at least 1.")
+        if self.bb_external_penalty < 0:
+            raise ValueError("bb_external_penalty must be non-negative.")
+        if self.bb_size_penalty < 0:
+            raise ValueError("bb_size_penalty must be non-negative.")
 
     @property
     def knn_k(self) -> int:

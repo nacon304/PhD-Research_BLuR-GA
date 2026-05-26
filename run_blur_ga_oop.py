@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3], help="0: standard GA, 1: empirical linkage GA, 2: pairwise Lasso, 3: partial main+pairwise Lasso")
     parser.add_argument("--data-dir", default=".", help="Directory containing <problem>.dat")
     parser.add_argument("--output-dir", default="results_nested", help="Directory for result CSV files")
-    parser.add_argument("--artifact-layout", choices=["both", "nested", "root"], default="both", help="Where to write per-run artifacts. both preserves old root files and nested HPC-safe files.")
+    parser.add_argument("--artifact-layout", choices=["both", "nested", "root"], default="root", help="Where to write per-run artifacts. root keeps one compact method folder; nested is HPC-safe for parallel arrays; both writes both layouts.")
     parser.add_argument("--write-aggregate-outputs", type=str2bool, default=True, help="Write root aggregate files such as nested_summary, bind, generation_trace. Use false for parallel HPC array tasks and aggregate later.")
     parser.add_argument("--outer-folds", type=int, default=3, help="Number of outer CV folds")
     parser.add_argument("--inner-folds", type=int, default=3, help="Number of inner CV folds")
@@ -76,6 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
+
+    # LTGA building-block diagnostics for ga_type 1/2/3. This does not change the GA operator.
+    parser.add_argument("--build-building-blocks", type=str2bool, default=False, help="Extract LTGA building blocks from the current linkage graph during the run")
+    parser.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default="absolute", help="LTGA mode: absolute uses |w|; signed uses |w| plus same/opposite polarity consistency; positive keeps only positive same-state edges")
+    parser.add_argument("--bb-gawll-update-interval", type=int, default=None, help="For ga_type=1/GAwLL only: rebuild LTGA building blocks every N generations; defaults to --bb-snapshot-interval")
+    parser.add_argument("--bb-min-block-size", type=int, default=2)
+    parser.add_argument("--bb-max-block-size", type=int, default=None)
+    parser.add_argument("--bb-max-blocks", type=int, default=20, help="Maximum selected non-overlapping blocks written per snapshot")
+    parser.add_argument("--bb-snapshot-interval", type=int, default=1, help="Extract/log building blocks every N generations")
+    parser.add_argument("--bb-external-penalty", type=float, default=0.25)
+    parser.add_argument("--bb-size-penalty", type=float, default=0.01)
     return parser
 
 
@@ -119,6 +130,15 @@ def main(argv: list[str] | None = None) -> None:
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
+        build_building_blocks=args.build_building_blocks,
+        bb_weight_mode=args.bb_weight_mode,
+        bb_gawll_update_interval=args.bb_gawll_update_interval,
+        bb_min_block_size=args.bb_min_block_size,
+        bb_max_block_size=args.bb_max_block_size,
+        bb_max_blocks=args.bb_max_blocks,
+        bb_snapshot_interval=args.bb_snapshot_interval,
+        bb_external_penalty=args.bb_external_penalty,
+        bb_size_penalty=args.bb_size_penalty,
     )
     exp_cfg = ExperimentConfig(
         outer_folds=args.outer_folds,
@@ -138,6 +158,12 @@ def main(argv: list[str] | None = None) -> None:
             f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
             f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
             f"delta={ga_cfg.lr_delta}, edge_top_k={ga_cfg.lr_edge_top_k}"
+        )
+    if ga_cfg.build_building_blocks and ga_cfg.ga_type != 0:
+        print(
+            f"LTGA building blocks: mode={ga_cfg.bb_weight_mode}, "
+            f"gawll_interval={ga_cfg.bb_gawll_update_interval or ga_cfg.bb_snapshot_interval}, "
+            f"type2/3_update=after_successful_LR, max_blocks={ga_cfg.bb_max_blocks}"
         )
     print(f"Nested CV: outer={exp_cfg.outer_folds}, inner={exp_cfg.inner_folds}, repeats={exp_cfg.repeats}")
     print(f"Output: artifact_layout={exp_cfg.artifact_layout}, aggregate_outputs={exp_cfg.write_aggregate_outputs}")

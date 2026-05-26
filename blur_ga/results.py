@@ -93,6 +93,7 @@ class ResultWriter:
         self._write_legacy_vectors()
         self._write_selected_features()
         self._write_generation_traces()
+        self._write_aggregate_building_block_artifacts()
 
     def _run_dir(self, row: EvaluatedRun) -> Path:
         return self.output_dir / f"rep{row.repeat_id:02d}" / f"fold{row.outer_fold:02d}" / f"run{row.run_id:03d}"
@@ -131,6 +132,7 @@ class ResultWriter:
 
         self._write_linkage_events(row, run_dir)
         self._write_graph_snapshots(row, run_dir)
+        self._write_building_block_artifacts(row, run_dir)
 
     def _write_run_summary(self, row: EvaluatedRun, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,12 +257,23 @@ class ResultWriter:
             "feature_i",
             "feature_j",
             "omega",
+            "signed_omega",
+            "raw_signed_omega",
+            "sign",
+            "raw_sign",
+            "is_active",
             "is_positive",
             "was_new_edge",
             "edge_weight_after",
+            "signed_weight_after",
+            "raw_signed_weight_after",
+            "active_count_after",
             "positive_count_after",
+            "negative_count_after",
             "tested_count_after",
             "weight_sum_after",
+            "signed_weight_sum_after",
+            "raw_signed_weight_sum_after",
             "first_seen_generation",
             "last_updated_generation",
             "parent_fitness",
@@ -291,12 +304,23 @@ class ResultWriter:
                         int(event["feature_i"]),
                         int(event["feature_j"]),
                         f"{float(event['omega']):.14f}",
+                        f"{float(event.get('signed_omega', event['omega'])):.14f}",
+                        f"{float(event.get('raw_signed_omega', event.get('signed_omega', event['omega']))):.14f}",
+                        int(event.get("sign", 1 if float(event.get('signed_omega', event['omega'])) > 0 else (-1 if float(event.get('signed_omega', event['omega'])) < 0 else 0))),
+                        int(event.get("raw_sign", 1 if float(event.get('raw_signed_omega', event.get('signed_omega', event['omega']))) > 0 else (-1 if float(event.get('raw_signed_omega', event.get('signed_omega', event['omega']))) < 0 else 0))),
+                        int(bool(event.get("is_active", event.get("is_positive", False)))),
                         int(bool(event["is_positive"])),
                         int(bool(event["was_new_edge"])),
                         f"{float(event['edge_weight_after']):.14f}",
+                        f"{float(event.get('signed_weight_after', event['edge_weight_after'])):.14f}",
+                        f"{float(event.get('raw_signed_weight_after', event.get('signed_weight_after', event['edge_weight_after']))):.14f}",
+                        int(event.get("active_count_after", event.get("positive_count_after", 0))),
                         int(event["positive_count_after"]),
+                        int(event.get("negative_count_after", 0)),
                         int(event["tested_count_after"]),
                         f"{float(event['weight_sum_after']):.14f}",
+                        f"{float(event.get('signed_weight_sum_after', event['weight_sum_after'])):.14f}",
+                        f"{float(event.get('raw_signed_weight_sum_after', event.get('signed_weight_sum_after', event['weight_sum_after']))):.14f}",
                         int(event["first_seen_generation"]),
                         int(event["last_updated_generation"]),
                         f"{float(event['parent_fitness']):.14f}",
@@ -320,6 +344,10 @@ class ResultWriter:
             "feature_i",
             "feature_j",
             "weight",
+            "signed_weight",
+            "sign",
+            "raw_signed_weight",
+            "raw_sign",
             "positive_count",
             "tested_count",
             "weight_sum",
@@ -345,11 +373,171 @@ class ResultWriter:
                         int(item["feature_i"]),
                         int(item["feature_j"]),
                         f"{float(item['weight']):.14f}",
+                        f"{float(item.get('signed_weight', item['weight'])):.14f}",
+                        int(item.get("sign", 1 if float(item.get('signed_weight', item['weight'])) > 0 else (-1 if float(item.get('signed_weight', item['weight'])) < 0 else 0))),
+                        f"{float(item.get('raw_signed_weight', item.get('signed_weight', item['weight']))):.14f}",
+                        int(item.get("raw_sign", 1 if float(item.get('raw_signed_weight', item.get('signed_weight', item['weight']))) > 0 else (-1 if float(item.get('raw_signed_weight', item.get('signed_weight', item['weight']))) < 0 else 0))),
                         int(item["positive_count"]),
                         int(item["tested_count"]),
                         f"{float(item['weight_sum']):.14f}",
                         int(item["first_seen_generation"]),
                         int(item["last_updated_generation"]),
+                    ])
+
+    def _write_building_block_artifacts(self, row: EvaluatedRun, run_dir: Path) -> None:
+        if row.run_result is None:
+            return
+        summaries = row.run_result.building_block_summaries
+        blocks = row.run_result.building_blocks
+        if not summaries and not blocks:
+            return
+        paths: list[tuple[Path, Path]] = []
+        if self._write_nested:
+            paths.append((run_dir / self._artifact_name("building_block_summary"), run_dir / self._artifact_name("building_blocks")))
+        if self._write_root:
+            paths.append((
+                self.output_dir / self._artifact_name("building_block_summary", row, root_level=True),
+                self.output_dir / self._artifact_name("building_blocks", row, root_level=True),
+            ))
+        summary_header = [
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
+            "max_block_size", "mean_score", "max_score", "mean_internal_abs",
+            "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
+            "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
+        ]
+        block_header = [
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "block_id", "features", "size", "score", "density", "internal_abs_mean",
+            "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
+            "n_internal_edges", "n_positive_edges", "n_negative_edges",
+            "signed_balance", "n_sign_conflicts", "polarity", "positive_group", "negative_group", "schema_hint",
+            "source",
+        ]
+        for summary_path, block_path in paths:
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            if summaries:
+                with summary_path.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(summary_header)
+                    for item in summaries:
+                        writer.writerow([
+                            row.repeat_id, row.outer_fold, row.run_id,
+                            int(item.get("generation", 0)),
+                            item.get("bb_method", "ltga"),
+                            item.get("bb_weight_mode", ""),
+                            int(item.get("n_features", 0)),
+                            int(item.get("n_graph_edges", 0)),
+                            int(item.get("n_candidates", 0)),
+                            int(item.get("n_blocks", 0)),
+                            f"{float(item.get('mean_block_size', 0.0)):.14f}",
+                            int(item.get("max_block_size", 0)),
+                            f"{float(item.get('mean_score', 0.0)):.14f}",
+                            f"{float(item.get('max_score', 0.0)):.14f}",
+                            f"{float(item.get('mean_internal_abs', 0.0)):.14f}",
+                            f"{float(item.get('mean_internal_positive', 0.0)):.14f}",
+                            f"{float(item.get('mean_internal_negative_abs', 0.0)):.14f}",
+                            f"{float(item.get('mean_signed_balance', 0.0)):.14f}",
+                            int(item.get("n_positive_edges_in_blocks", 0)),
+                            int(item.get("n_negative_edges_in_blocks", 0)),
+                            int(item.get("n_sign_conflicts_in_blocks", 0)),
+                        ])
+            if blocks:
+                with block_path.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(block_header)
+                    for item in blocks:
+                        writer.writerow([
+                            row.repeat_id, row.outer_fold, row.run_id,
+                            int(item.get("generation", 0)),
+                            item.get("bb_method", "ltga"),
+                            item.get("bb_weight_mode", ""),
+                            int(item.get("block_id", 0)),
+                            item.get("features", ""),
+                            int(item.get("size", 0)),
+                            f"{float(item.get('score', 0.0)):.14f}",
+                            f"{float(item.get('density', 0.0)):.14f}",
+                            f"{float(item.get('internal_abs_mean', 0.0)):.14f}",
+                            f"{float(item.get('internal_positive_mean', 0.0)):.14f}",
+                            f"{float(item.get('internal_negative_abs_mean', 0.0)):.14f}",
+                            f"{float(item.get('external_abs_mean', 0.0)):.14f}",
+                            int(item.get("n_internal_edges", 0)),
+                            int(item.get("n_positive_edges", 0)),
+                            int(item.get("n_negative_edges", 0)),
+                            f"{float(item.get('signed_balance', 0.0)):.14f}",
+                            int(item.get("n_sign_conflicts", 0)),
+                            item.get("polarity", ""),
+                            item.get("positive_group", ""),
+                            item.get("negative_group", ""),
+                            item.get("schema_hint", ""),
+                            item.get("source", ""),
+                        ])
+
+    def _write_aggregate_building_block_artifacts(self) -> None:
+        if not any(r.run_result is not None and (r.run_result.building_block_summaries or r.run_result.building_blocks) for r in self.rows):
+            return
+        summary_path = self.output_dir / f"building_block_summary_{self.prefix}.csv"
+        block_path = self.output_dir / f"building_blocks_{self.prefix}.csv"
+        summary_header = [
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
+            "max_block_size", "mean_score", "max_score", "mean_internal_abs",
+            "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
+            "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
+        ]
+        block_header = [
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode",
+            "block_id", "features", "size", "score", "density", "internal_abs_mean",
+            "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
+            "n_internal_edges", "n_positive_edges", "n_negative_edges",
+            "signed_balance", "n_sign_conflicts", "polarity", "positive_group", "negative_group", "schema_hint",
+            "source",
+        ]
+        with summary_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(summary_header)
+            for row in sorted(self.rows, key=lambda x: (x.repeat_id, x.outer_fold, x.run_id)):
+                if row.run_result is None:
+                    continue
+                for item in row.run_result.building_block_summaries:
+                    writer.writerow([
+                        row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
+                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""),
+                        int(item.get("n_features", 0)), int(item.get("n_graph_edges", 0)),
+                        int(item.get("n_candidates", 0)), int(item.get("n_blocks", 0)),
+                        f"{float(item.get('mean_block_size', 0.0)):.14f}", int(item.get("max_block_size", 0)),
+                        f"{float(item.get('mean_score', 0.0)):.14f}", f"{float(item.get('max_score', 0.0)):.14f}",
+                        f"{float(item.get('mean_internal_abs', 0.0)):.14f}",
+                        f"{float(item.get('mean_internal_positive', 0.0)):.14f}",
+                        f"{float(item.get('mean_internal_negative_abs', 0.0)):.14f}",
+                        f"{float(item.get('mean_signed_balance', 0.0)):.14f}",
+                        int(item.get("n_positive_edges_in_blocks", 0)),
+                        int(item.get("n_negative_edges_in_blocks", 0)),
+                        int(item.get("n_sign_conflicts_in_blocks", 0)),
+                    ])
+        with block_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(block_header)
+            for row in sorted(self.rows, key=lambda x: (x.repeat_id, x.outer_fold, x.run_id)):
+                if row.run_result is None:
+                    continue
+                for item in row.run_result.building_blocks:
+                    writer.writerow([
+                        row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
+                        item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""),
+                        int(item.get("block_id", 0)), item.get("features", ""), int(item.get("size", 0)),
+                        f"{float(item.get('score', 0.0)):.14f}", f"{float(item.get('density', 0.0)):.14f}",
+                        f"{float(item.get('internal_abs_mean', 0.0)):.14f}",
+                        f"{float(item.get('internal_positive_mean', 0.0)):.14f}",
+                        f"{float(item.get('internal_negative_abs_mean', 0.0)):.14f}",
+                        f"{float(item.get('external_abs_mean', 0.0)):.14f}",
+                        int(item.get("n_internal_edges", 0)), int(item.get("n_positive_edges", 0)),
+                        int(item.get("n_negative_edges", 0)),
+                        f"{float(item.get('signed_balance', 0.0)):.14f}",
+                        int(item.get("n_sign_conflicts", 0)),
+                        item.get("polarity", ""), item.get("positive_group", ""),
+                        item.get("negative_group", ""), item.get("schema_hint", ""),
+                        item.get("source", ""),
                     ])
 
     def _write_summary(self) -> None:

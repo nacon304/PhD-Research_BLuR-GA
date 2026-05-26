@@ -561,6 +561,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # python analysis_interactive/analyze_linkage_correctness/plot_linkage_all_returned_analysis.py `
-#   --summary "..\Results\results_linkage_test_theory_v3\linkage_eval_summary.csv" `
-#   --by-method "..\Results\results_linkage_test_theory_v3\linkage_eval_by_method.csv" `
-#   --outdir "..\Results\results_linkage_test_theory_v3\linkage_figures_all_returned"
+#   --summary "..\Results\results_linkage_test_theory_v4\linkage_eval_summary.csv" `
+#   --by-method "..\Results\results_linkage_test_theory_v4\linkage_eval_by_method.csv" `
+#   --outdir "..\Results\results_linkage_test_theory_v4\linkage_figures_all_returned"

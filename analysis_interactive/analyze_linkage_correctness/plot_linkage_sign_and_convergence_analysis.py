@@ -49,11 +49,12 @@ METHOD_LABELS = {
     "random_graph": "Random graph",
 }
 
-# These methods have no meaningful learned signed coefficient in the current setup.
-# - empirical_linkage_legacy: current evaluator returns 0 when the prediction file has no sign column.
-# - top_cooccurrence/random_graph: sign is always +1 in the baseline generator, so high sign accuracy
-#   mainly means the true benchmark has mostly positive edges, not that the baseline learned signs.
+# These methods now expose meaningful learned signed coefficients.
+# - empirical_linkage_legacy uses canonical/oriented GAwLL diff-in-diff signs.
+# - pairwise/main+pairwise Lasso use signed regression coefficients.
+# Baselines such as top_cooccurrence/random_graph are intentionally excluded.
 DEFAULT_SIGNED_METHODS = [
+    "empirical_linkage_legacy",
     "blur_ga_main_pairwise_lasso",
     "blur_ga_pairwise_lasso",
 ]
@@ -347,6 +348,29 @@ def write_sign_tables(summary: pd.DataFrame, by_method: pd.DataFrame, signed_met
     )
     raw_overall["method_label"] = raw_overall["method"].map(method_label)
     raw_overall.to_csv(outdir / "sign_accuracy_overall_raw_all_methods.csv", index=False)
+
+    if "raw_sign_accuracy" in by_method.columns:
+        raw_vs_oriented_cols = [
+            c for c in [
+                "dataset", "family", "method", "method_label", "sign_accuracy", "raw_sign_accuracy",
+                "signed_precision", "raw_signed_precision", "signed_recall", "raw_signed_recall",
+                "signed_f1", "raw_signed_f1", "true_positives", "n_pred_edges",
+            ] if c in by_method.columns
+        ]
+        by_method[raw_vs_oriented_cols].sort_values(["family", "dataset", "method"]).to_csv(
+            outdir / "sign_accuracy_raw_local_vs_oriented.csv", index=False
+        )
+        raw_cmp = (
+            by_method.groupby("method", as_index=False)
+            .agg(
+                oriented_sign_accuracy=("sign_accuracy", "mean"),
+                raw_local_sign_accuracy=("raw_sign_accuracy", "mean"),
+                oriented_signed_f1=("signed_f1", "mean"),
+                raw_local_signed_f1=("raw_signed_f1", "mean"),
+            )
+        )
+        raw_cmp["method_label"] = raw_cmp["method"].map(method_label)
+        raw_cmp.to_csv(outdir / "sign_accuracy_raw_local_vs_oriented_overall.csv", index=False)
 
     signed = by_method.loc[by_method["method"].isin(signed_methods)].copy()
     signed_overall_rows = []
@@ -742,7 +766,7 @@ def write_report(by_method: pd.DataFrame, signed: pd.DataFrame, outdir: Path, co
     lines.append("")
     lines.append("Important caveat: a method can have high sign accuracy and still be poor if it finds only a small or noisy subset of true edges. Always read sign accuracy together with precision, recall, F1, and the number of true positives.")
     lines.append("")
-    lines.append("In the current evaluator, `empirical_linkage_legacy` may show `sign_accuracy = 0` because its predicted-edge output does not provide a meaningful sign column. This should be interpreted as not applicable, not as evidence that all signs are wrong.")
+    lines.append("`empirical_linkage_legacy` now reports a canonical/oriented GAwLL sign. When available, `raw_sign_accuracy` is the old raw local flip sign before orientation; compare it with `sign_accuracy` to verify that the orientation correction helps.")
     lines.append("")
     lines.append("`top_cooccurrence` and `random_graph` use a constant positive sign in the baseline generator. If a benchmark has mostly positive true edges, their raw sign accuracy can look high even though they did not learn signed epistatic effects.")
     lines.append("")
@@ -756,6 +780,8 @@ def write_report(by_method: pd.DataFrame, signed: pd.DataFrame, outdir: Path, co
         )
     lines.append("")
     lines.append("## Signed-method sign accuracy")
+    lines.append("")
+    lines.append("Default signed methods now include empirical GAwLL plus the two Lasso linkage methods.")
     lines.append("")
     if signed_overall.empty:
         lines.append("No signed methods were available after filtering.")
@@ -841,7 +867,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # python analysis_interactive/analyze_linkage_correctness/plot_linkage_sign_and_convergence_analysis.py `
-#   --summary "../Results/results_linkage_test_theory_v3/linkage_eval_summary.csv" `
-#   --by-method "../Results/results_linkage_test_theory_v3/linkage_eval_by_method.csv" `
-#   --results-root "../Results/results_linkage_test_theory_v3" `
-#   --outdir ../Results/results_linkage_test_theory_v3/linkage_sign_convergence_figures
+#   --summary "../Results/results_linkage_test_theory_v4/linkage_eval_summary.csv" `
+#   --by-method "../Results/results_linkage_test_theory_v4/linkage_eval_by_method.csv" `
+#   --results-root "../Results/results_linkage_test_theory_v4" `
+#   --outdir ../Results/results_linkage_test_theory_v4/linkage_sign_convergence_figures

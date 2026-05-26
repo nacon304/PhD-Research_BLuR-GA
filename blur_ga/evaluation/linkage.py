@@ -39,13 +39,42 @@ def load_true_edges(path: str | Path) -> pd.DataFrame:
     return df.sort_values(["feature_i", "feature_j"]).reset_index(drop=True)
 
 
+def _signed_matrix_from_evig(evig: object, weight: np.ndarray) -> np.ndarray:
+    """Return the best available signed edge matrix for linkage correctness evaluation.
+
+    RegressionVIG stores signed information in ``coefficient``. EmpiricalVIG
+    stores it in ``signed_weight`` exposed through ``signed_matrix()``. The old
+    evaluator only looked for ``coefficient`` and therefore gave GAwLL sign=0,
+    even though signed diff-in-diff values were available.
+    """
+    if hasattr(evig, "signed_matrix"):
+        return np.asarray(getattr(evig, "signed_matrix")(), dtype=float)
+    if hasattr(evig, "coefficient_matrix"):
+        return np.asarray(getattr(evig, "coefficient_matrix")(), dtype=float)
+    if hasattr(evig, "coefficient"):
+        return np.asarray(getattr(evig, "coefficient"), dtype=float)
+    return np.zeros_like(weight, dtype=float)
+
+
+
+
+def _raw_signed_matrix_from_evig(evig: object, signed: np.ndarray) -> np.ndarray:
+    """Return raw/local signed matrix when available; otherwise mirror signed."""
+    if hasattr(evig, "raw_signed_matrix"):
+        raw = np.asarray(getattr(evig, "raw_signed_matrix")(), dtype=float)
+        if raw.shape == signed.shape:
+            return raw
+    return np.asarray(signed, dtype=float).copy()
+
+
 def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | None = None) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     if evig is None:
         return pd.DataFrame(columns=["rank", *_predicted_edge_columns()])
     n_features = int(getattr(evig, "n_features", 0))
     weight = np.asarray(getattr(evig, "weight"), dtype=float)
-    coefficient = np.asarray(getattr(evig, "coefficient", np.zeros_like(weight)), dtype=float)
+    coefficient = _signed_matrix_from_evig(evig, weight)
+    raw_coefficient = _raw_signed_matrix_from_evig(evig, coefficient)
     stability = np.asarray(getattr(evig, "stability", np.zeros_like(weight)), dtype=float)
     selected_count = np.asarray(getattr(evig, "selected_count", getattr(evig, "count", np.zeros_like(weight))), dtype=int)
     tested_count = np.asarray(getattr(evig, "tested_count", np.zeros_like(weight)), dtype=int)
@@ -58,6 +87,8 @@ def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | 
                 continue
             coef = float(coefficient[i, j])
             sign = int(np.sign(coef)) if abs(coef) > 0 else 0
+            raw_coef = float(raw_coefficient[i, j])
+            raw_sign = int(np.sign(raw_coef)) if abs(raw_coef) > 0 else 0
             rows.append({
                 "dataset": dataset,
                 "method": method,
@@ -67,6 +98,8 @@ def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | 
                 "score": score,
                 "coefficient": coef,
                 "sign": sign,
+                "raw_coefficient": raw_coef,
+                "raw_sign": raw_sign,
                 "stability": float(stability[i, j]),
                 "selected_count": int(selected_count[i, j]),
                 "tested_count": int(tested_count[i, j]),
@@ -85,7 +118,8 @@ def evig_to_edges(evig: object, *, method: str, dataset: str, generation: int | 
 def _predicted_edge_columns() -> list[str]:
     return [
         "dataset", "method", "generation", "feature_i", "feature_j", "score", "coefficient", "sign",
-        "stability", "selected_count", "tested_count", "first_seen_generation", "last_updated_generation",
+        "raw_coefficient", "raw_sign", "stability", "selected_count", "tested_count",
+        "first_seen_generation", "last_updated_generation",
     ]
 
 
@@ -156,6 +190,43 @@ def sign_accuracy(pred: pd.DataFrame, true: pd.DataFrame) -> float:
     return float(np.mean([pred_map[p] == true_map[p] for p in common]))
 
 
+def signed_edge_metrics(pred_subset: pd.DataFrame, true: pd.DataFrame, *, sign_col: str = "sign", prefix: str = "") -> dict[str, float | int]:
+    """Sign-aware correctness for the current evaluation subset.
+
+    ``sign_accuracy`` is computed only on predicted edges that are also true
+    edges and where both predicted and true signs are non-zero.
+
+    ``signed_precision/recall/f1`` are stricter: an edge is a hit only if both
+    the pair and the sign are correct.  When ``sign_col='raw_sign'`` and
+    ``prefix='raw_'``, the same metrics compare GAwLL's raw local sign before
+    canonical orientation against ground truth.
+    """
+    true_map = {canonical_pair(r.feature_i, r.feature_j): int(r.true_sign) for r in true.itertuples(index=False)} if not true.empty else {}
+    if pred_subset.empty or sign_col not in pred_subset.columns:
+        pred_map: dict[tuple[int, int], int] = {}
+    else:
+        pred_map = {canonical_pair(r.feature_i, r.feature_j): int(getattr(r, sign_col)) for r in pred_subset.itertuples(index=False)}
+
+    true_signed_pairs = {p for p, s in true_map.items() if s != 0}
+    common_signed = [p for p in pred_map if p in true_map and pred_map[p] != 0 and true_map[p] != 0]
+    sign_correct = int(sum(pred_map[p] == true_map[p] for p in common_signed))
+    sign_wrong = int(len(common_signed) - sign_correct)
+    sign_acc = float(sign_correct / len(common_signed)) if common_signed else 0.0
+
+    n_eval_edges = len(pred_map)
+    signed_precision = float(sign_correct / n_eval_edges) if n_eval_edges else 0.0
+    signed_recall = float(sign_correct / len(true_signed_pairs)) if true_signed_pairs else 0.0
+    signed_f1 = _safe_f1(signed_precision, signed_recall)
+    return {
+        f"{prefix}n_sign_eval_edges": int(len(common_signed)),
+        f"{prefix}sign_correct_edges": int(sign_correct),
+        f"{prefix}sign_wrong_edges": int(sign_wrong),
+        f"{prefix}sign_accuracy": float(sign_acc),
+        f"{prefix}signed_precision": float(signed_precision),
+        f"{prefix}signed_recall": float(signed_recall),
+        f"{prefix}signed_f1": float(signed_f1),
+    }
+
 def _metric_row(
     pred_subset: pd.DataFrame,
     true: pd.DataFrame,
@@ -172,7 +243,6 @@ def _metric_row(
     k_effective: int | None,
     average_precision_value: float,
     spearman_value: float,
-    sign_accuracy_value: float,
     n_pred_edges_total: int,
 ) -> dict[str, object]:
     tp, fp, fn, pred_set, true_set = edge_confusion(pred_subset, true)
@@ -183,6 +253,8 @@ def _metric_row(
     f1 = _safe_f1(precision, recall)
     strict_denominator = int(k_effective) if eval_scope == "top_k" and k_effective is not None else n_eval_edges
     precision_strict = tp / strict_denominator if strict_denominator else 0.0
+    sign_stats = signed_edge_metrics(pred_subset, true, sign_col="sign")
+    raw_sign_stats = signed_edge_metrics(pred_subset, true, sign_col="raw_sign", prefix="raw_")
 
     return {
         "dataset": dataset,
@@ -212,7 +284,20 @@ def _metric_row(
         "precision_at_k_strict": float(precision_strict),
         "average_precision": average_precision_value,
         "spearman_abs_weight": spearman_value,
-        "sign_accuracy": sign_accuracy_value,
+        "n_sign_eval_edges": int(sign_stats["n_sign_eval_edges"]),
+        "sign_correct_edges": int(sign_stats["sign_correct_edges"]),
+        "sign_wrong_edges": int(sign_stats["sign_wrong_edges"]),
+        "sign_accuracy": float(sign_stats["sign_accuracy"]),
+        "signed_precision": float(sign_stats["signed_precision"]),
+        "signed_recall": float(sign_stats["signed_recall"]),
+        "signed_f1": float(sign_stats["signed_f1"]),
+        "raw_n_sign_eval_edges": int(raw_sign_stats["raw_n_sign_eval_edges"]),
+        "raw_sign_correct_edges": int(raw_sign_stats["raw_sign_correct_edges"]),
+        "raw_sign_wrong_edges": int(raw_sign_stats["raw_sign_wrong_edges"]),
+        "raw_sign_accuracy": float(raw_sign_stats["raw_sign_accuracy"]),
+        "raw_signed_precision": float(raw_sign_stats["raw_signed_precision"]),
+        "raw_signed_recall": float(raw_sign_stats["raw_signed_recall"]),
+        "raw_signed_f1": float(raw_sign_stats["raw_signed_f1"]),
         "n_true_edges": int(n_true),
         "n_pred_edges": int(n_pred_edges_total),
         "n_features": int(n_features),
@@ -247,7 +332,6 @@ def evaluate_predicted_edges(
     total_pairs = n_features * (n_features - 1) // 2
     ap = average_precision(pred, true)
     spear = spearman_weight_correlation(pred, true, n_features)
-    sign_acc = sign_accuracy(pred, true)
     rows: list[dict[str, object]] = []
 
     if include_all_returned:
@@ -266,7 +350,6 @@ def evaluate_predicted_edges(
             k_effective=None,
             average_precision_value=ap,
             spearman_value=spear,
-            sign_accuracy_value=sign_acc,
             n_pred_edges_total=len(pred),
         ))
 
@@ -289,7 +372,6 @@ def evaluate_predicted_edges(
             k_effective=int(k_effective),
             average_precision_value=ap,
             spearman_value=spear,
-            sign_accuracy_value=sign_acc,
             n_pred_edges_total=len(pred),
         ))
 

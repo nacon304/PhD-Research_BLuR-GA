@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import GAConfig
+from .building_blocks import (
+    LTGABuildingBlockConfig,
+    LTGABuildingBlockExtractor,
+    LinkageGraphView,
+    BuildingBlockSnapshot,
+)
 from .evaluator import FitnessEvaluator
 from .evig import EmpiricalVIG
 from .lr_linkage import RegressionLinkageLearner, RegressionVIG, ga_type_to_regression_stage
@@ -34,7 +40,9 @@ class RunResult:
     evig: EmpiricalVIG | RegressionVIG | None
     generation_trace: list[dict[str, float | int | str]] = field(default_factory=list)
     linkage_events: list[dict[str, float | int | bool]] = field(default_factory=list)
-    graph_snapshots: list[dict[str, float | int]] = field(default_factory=list)
+    graph_snapshots: list[dict[str, float | int | str]] = field(default_factory=list)
+    building_block_summaries: list[dict[str, float | int | str]] = field(default_factory=list)
+    building_blocks: list[dict[str, float | int | str]] = field(default_factory=list)
     archive_chromosomes: np.ndarray | None = None
     archive_fitness: np.ndarray | None = None
     archive_generations: np.ndarray | None = None
@@ -70,7 +78,24 @@ class GeneticFeatureSelector:
         self.best_so_far: Individual | None = None
         self.generation_trace: list[dict[str, float | int | str]] = []
         self.linkage_events: list[dict[str, float | int | bool]] = []
-        self.graph_snapshots: list[dict[str, float | int]] = []
+        self.graph_snapshots: list[dict[str, float | int | str]] = []
+        self.building_block_summaries: list[dict[str, float | int | str]] = []
+        self.building_blocks: list[dict[str, float | int | str]] = []
+        self._latest_building_block_snapshot: BuildingBlockSnapshot | None = None
+        self._bb_extractor: LTGABuildingBlockExtractor | None = None
+        if self.config.build_building_blocks:
+            self._bb_extractor = LTGABuildingBlockExtractor(
+                LTGABuildingBlockConfig(
+                    enabled=True,
+                    weight_mode=self.config.bb_weight_mode,
+                    min_block_size=self.config.bb_min_block_size,
+                    max_block_size=self.config.bb_max_block_size,
+                    max_blocks=self.config.bb_max_blocks,
+                    snapshot_interval=self.config.bb_snapshot_interval,
+                    external_penalty=self.config.bb_external_penalty,
+                    size_penalty=self.config.bb_size_penalty,
+                )
+            )
         self._current_generation = 0
         self._archive_seen: set[tuple[int, ...]] = set()
         self._archive_chromosomes: list[np.ndarray] = []
@@ -129,13 +154,21 @@ class GeneticFeatureSelector:
                 self.population = self._next_generation_empirical_linkage(evig, generation=generation)
                 if self.config.save_graph_snapshots and generation % self.config.graph_snapshot_interval == 0:
                     self._capture_graph_snapshot(evig, generation)
+                # Empirical/GAwLL linkage is updated online by linkage mutation;
+                # use a dedicated interval for LTGA diagnostics.
+                self._capture_building_blocks(evig, generation)
             elif self._regression_stage is not None:
                 assert isinstance(evig, RegressionVIG)
                 self.population = self._next_generation_standard()
+                lr_updated = False
                 if generation % self.config.lr_gap_gen == 0:
-                    self._fit_regression_graph(evig, generation)
+                    lr_updated = self._fit_regression_graph(evig, generation)
                 if self.config.save_graph_snapshots and generation % self.config.graph_snapshot_interval == 0:
                     self._capture_graph_snapshot(evig, generation)
+                # For type 2/3, LTGA is only rebuilt when the LR linkage graph
+                # has actually been refit and pushed into RegressionVIG.
+                if lr_updated:
+                    self._capture_building_blocks(evig, generation, force=True)
             else:
                 self.population = self._next_generation_standard()
             self._update_best_from_population()
@@ -153,6 +186,13 @@ class GeneticFeatureSelector:
                     item for item in self.graph_snapshots if int(item.get("generation", -1)) != generation
                 ]
                 self._capture_graph_snapshot(evig, generation)
+            self.building_block_summaries = [
+                item for item in self.building_block_summaries if int(item.get("generation", -1)) != generation
+            ]
+            self.building_blocks = [
+                item for item in self.building_blocks if int(item.get("generation", -1)) != generation
+            ]
+            self._capture_building_blocks(evig, generation, force=True)
 
         assert self.best_so_far is not None
         return RunResult(
@@ -167,6 +207,8 @@ class GeneticFeatureSelector:
             generation_trace=self.generation_trace,
             linkage_events=self.linkage_events,
             graph_snapshots=self.graph_snapshots,
+            building_block_summaries=self.building_block_summaries,
+            building_blocks=self.building_blocks,
             archive_chromosomes=np.vstack(self._archive_chromosomes).astype(np.int8, copy=False) if self._archive_chromosomes else np.empty((0, self.n_features), dtype=np.int8),
             archive_fitness=np.asarray(self._archive_fitness, dtype=float),
             archive_generations=np.asarray(self._archive_generations, dtype=int),
@@ -214,15 +256,16 @@ class GeneticFeatureSelector:
         assert self._archive_gen_cache is not None
         return self._archive_X_cache, self._archive_y_cache, self._archive_gen_cache
 
-    def _fit_regression_graph(self, evig: RegressionVIG, generation: int, force: bool = False) -> None:
+    def _fit_regression_graph(self, evig: RegressionVIG, generation: int, force: bool = False) -> bool:
+        """Fit the regression linkage model and return True only on a real graph update."""
         if self._lr_learner is None:
-            return
+            return False
         archive_size = len(self._archive_chromosomes)
         if archive_size - self._last_lr_archive_size < self._effective_lr_min_samples() and not force:
-            return
+            return False
         if archive_size == self._last_lr_archive_size and evig.last_n_samples == archive_size:
             evig.touch_fit_metadata(generation, archive_size)
-            return
+            return False
         X_archive, y_archive, gen_archive = self._archive_arrays()
         fit = self._lr_learner.fit(X_archive, y_archive, gen_archive, generation=generation)
         evig.update_from_fit(
@@ -231,6 +274,7 @@ class GeneticFeatureSelector:
             top_k=self.config.lr_edge_top_k,
         )
         self._last_lr_archive_size = archive_size
+        return True
 
     def _make_generation_trace_row(
         self,
@@ -272,6 +316,14 @@ class GeneticFeatureSelector:
             "n_tested_pairs": int(evig.n_tested_pairs if evig is not None else 0),
             "eval_count": int(self.evaluator.eval_count),
             "archive_size": int(len(self._archive_chromosomes)),
+            "bb_n_blocks": int(self._latest_building_block_snapshot.n_blocks) if self._latest_building_block_snapshot else 0,
+            "bb_n_candidates": int(self._latest_building_block_snapshot.n_candidates) if self._latest_building_block_snapshot else 0,
+            "bb_max_score": float(self._latest_building_block_snapshot.max_score) if self._latest_building_block_snapshot else 0.0,
+            "bb_mean_block_size": float(self._latest_building_block_snapshot.mean_block_size) if self._latest_building_block_snapshot else 0.0,
+            "bb_positive_edges_in_blocks": int(self._latest_building_block_snapshot.n_positive_edges_in_blocks) if self._latest_building_block_snapshot else 0,
+            "bb_negative_edges_in_blocks": int(self._latest_building_block_snapshot.n_negative_edges_in_blocks) if self._latest_building_block_snapshot else 0,
+            "bb_mean_signed_balance": float(self._latest_building_block_snapshot.mean_signed_balance) if self._latest_building_block_snapshot else 0.0,
+            "bb_sign_conflicts_in_blocks": int(self._latest_building_block_snapshot.n_sign_conflicts_in_blocks) if self._latest_building_block_snapshot else 0,
             "best_population_chromosome": "".join(str(int(v)) for v in best_pop_chrom),
             "best_so_far_chromosome": "".join(str(int(v)) for v in best_so_far_chrom),
             "best_population_selected_features": ";".join(str(int(i)) for i in np.flatnonzero(best_pop_chrom == 1)),
@@ -279,6 +331,14 @@ class GeneticFeatureSelector:
         }
 
     def _capture_graph_snapshot(self, evig: EmpiricalVIG | RegressionVIG, generation: int) -> None:
+        signed_matrix = None
+        raw_signed_matrix = None
+        if hasattr(evig, "signed_matrix"):
+            signed_matrix = evig.signed_matrix()
+        elif hasattr(evig, "coefficient_matrix"):
+            signed_matrix = evig.coefficient_matrix()
+        if hasattr(evig, "raw_signed_matrix"):
+            raw_signed_matrix = evig.raw_signed_matrix()
         for (
             feature_i,
             feature_j,
@@ -292,17 +352,79 @@ class GeneticFeatureSelector:
             min_weight=self.config.graph_snapshot_min_weight,
             top_k=self.config.graph_snapshot_top_k,
         ):
+            signed_weight = float(signed_matrix[feature_i, feature_j]) if signed_matrix is not None else float(weight)
+            sign = 1 if signed_weight > 0 else (-1 if signed_weight < 0 else 0)
+            raw_signed_weight = float(raw_signed_matrix[feature_i, feature_j]) if raw_signed_matrix is not None else float(signed_weight)
+            raw_sign = 1 if raw_signed_weight > 0 else (-1 if raw_signed_weight < 0 else 0)
             self.graph_snapshots.append(
                 {
                     "generation": int(generation),
                     "feature_i": int(feature_i),
                     "feature_j": int(feature_j),
                     "weight": float(weight),
+                    "signed_weight": float(signed_weight),
+                    "sign": int(sign),
+                    "raw_signed_weight": float(raw_signed_weight),
+                    "raw_sign": int(raw_sign),
                     "positive_count": int(positive_count),
                     "tested_count": int(tested_count),
                     "weight_sum": float(weight_sum),
                     "first_seen_generation": int(first_seen),
                     "last_updated_generation": int(last_updated),
+                }
+            )
+
+    def _capture_building_blocks(
+        self,
+        evig: EmpiricalVIG | RegressionVIG,
+        generation: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        if self._bb_extractor is None:
+            return
+        if not force:
+            if self.config.ga_type == 1:
+                interval = self.config.bb_gawll_update_interval or self.config.bb_snapshot_interval
+                if generation % int(interval) != 0:
+                    return
+            elif self._regression_stage is not None:
+                # Regression variants call this method only after a successful LR
+                # graph update, so no generation-periodic rebuild is needed here.
+                pass
+            else:
+                return
+        if evig.n_edges <= 0:
+            self._latest_building_block_snapshot = None
+            return
+        snapshot = self._bb_extractor.extract(LinkageGraphView.from_evig(evig), generation=generation)
+        self._latest_building_block_snapshot = snapshot
+        self.building_block_summaries.append(snapshot.summary_row())
+        for block in snapshot.blocks:
+            self.building_blocks.append(
+                {
+                    "generation": int(generation),
+                    "bb_method": "ltga",
+                    "bb_weight_mode": snapshot.mode,
+                    "block_id": int(block.block_id),
+                    "features": block.features_str,
+                    "size": int(block.size),
+                    "score": float(block.score),
+                    "density": float(block.density),
+                    "internal_abs_mean": float(block.internal_abs_mean),
+                    "internal_positive_mean": float(block.internal_positive_mean),
+                    "internal_negative_abs_mean": float(block.internal_negative_abs_mean),
+                    "external_abs_mean": float(block.external_abs_mean),
+                    "n_internal_edges": int(block.n_internal_edges),
+                    "n_positive_edges": int(block.n_positive_edges),
+                    "n_negative_edges": int(block.n_negative_edges),
+                    "signed_balance": float(block.signed_balance),
+                    "n_sign_conflicts": int(block.n_sign_conflicts),
+                    "polarity": block.polarity,
+                    "positive_group": block.positive_group,
+                    "negative_group": block.negative_group,
+                    "schema_hint": block.schema_hint,
+                    "source": block.source,
                 }
             )
 
@@ -439,8 +561,23 @@ class GeneticFeatureSelector:
         ind_g = self._make_individual(xg)
         ind_h = self._make_individual(xh)
         ind_hg = self._make_individual(xhg)
-        diff_in_diff = abs(ind_hg.fitness - ind_h.fitness - ind_g.fitness + fx)
-        obs = evig.add_observation(int(g), int(h), diff_in_diff, epsilon=self.config.edge_epsilon, generation=generation)
+        raw_diff_in_diff = ind_hg.fitness - ind_h.fitness - ind_g.fitness + fx
+        # Orient the local binary second difference to the canonical 0/1 coefficient
+        # sign.  Without this correction, the sign of the same QUBO-style edge can
+        # flip depending on whether the parent state is 00, 01, 10, or 11.
+        # Effective directions are computed after the non-empty-subset guard above;
+        # if a nominal flip became a no-op, the observation is treated as inactive.
+        dir_g = int(xg[g]) - int(base[g])
+        dir_h = int(xh[h]) - int(base[h])
+        oriented_diff_in_diff = raw_diff_in_diff * dir_g * dir_h if dir_g != 0 and dir_h != 0 else 0.0
+        obs = evig.add_observation(
+            int(g),
+            int(h),
+            oriented_diff_in_diff,
+            raw_observed_weight=raw_diff_in_diff,
+            epsilon=self.config.edge_epsilon,
+            generation=generation,
+        )
 
         if self.config.save_linkage_events:
             best_so_far_fit = float(self.best_so_far.fitness if self.best_so_far else fx)
@@ -451,12 +588,23 @@ class GeneticFeatureSelector:
                     "feature_i": int(obs.feature_i),
                     "feature_j": int(obs.feature_j),
                     "omega": float(obs.observed_weight),
+                    "signed_omega": float(obs.observed_signed_weight),
+                    "raw_signed_omega": float(obs.raw_observed_signed_weight),
+                    "raw_sign": int(obs.raw_sign),
+                    "sign": int(obs.sign),
+                    "is_active": bool(obs.is_active),
                     "is_positive": bool(obs.is_positive),
                     "was_new_edge": bool(obs.was_new_edge),
                     "edge_weight_after": float(obs.edge_weight_after),
+                    "signed_weight_after": float(obs.signed_weight_after),
+                    "raw_signed_weight_after": float(obs.raw_signed_weight_after),
+                    "active_count_after": int(obs.active_count_after),
                     "positive_count_after": int(obs.positive_count_after),
+                    "negative_count_after": int(obs.negative_count_after),
                     "tested_count_after": int(obs.tested_count_after),
                     "weight_sum_after": float(obs.weight_sum_after),
+                    "signed_weight_sum_after": float(obs.signed_weight_sum_after),
+                    "raw_signed_weight_sum_after": float(obs.raw_signed_weight_sum_after),
                     "first_seen_generation": int(obs.first_seen_generation),
                     "last_updated_generation": int(obs.last_updated_generation),
                     "parent_fitness": float(fx),

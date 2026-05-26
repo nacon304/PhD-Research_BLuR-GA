@@ -37,6 +37,12 @@ PRESETS: dict[str, dict[str, object]] = {
         "graph_snapshot_interval": 1,
         "graph_snapshot_top_k": 80,
         "save_linkage_events": False,
+        "build_building_blocks": True,
+        "bb_weight_mode": "absolute",
+        "bb_gawll_update_interval": 1,
+        "bb_snapshot_interval": 1,
+        "artifact_layout": "root",
+        "write_aggregate_outputs": True,
     },
     "analysis": {
         "popsize": 100,
@@ -49,6 +55,12 @@ PRESETS: dict[str, dict[str, object]] = {
         "graph_snapshot_interval": 1,
         # "graph_snapshot_top_k": 120,
         "save_linkage_events": False,
+        "build_building_blocks": True,
+        "bb_weight_mode": "absolute",
+        "bb_gawll_update_interval": 1,
+        "bb_snapshot_interval": 1,
+        "artifact_layout": "root",
+        "write_aggregate_outputs": True,
     },
     "nesi_full": {
         "popsize": 100,
@@ -202,10 +214,17 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_stability_fraction": 0.75,
         "lr_edge_min_weight": 0.0,
         "lr_edge_top_k": None,
-        # "artifact_layout": "both",
-        "artifact_layout": "nested",
-        # "write_aggregate_outputs": True,
-        "write_aggregate_outputs": False,
+        "artifact_layout": "root",
+        "write_aggregate_outputs": True,
+        "build_building_blocks": False,
+        "bb_weight_mode": "absolute",
+        "bb_gawll_update_interval": None,
+        "bb_min_block_size": 2,
+        "bb_max_block_size": None,
+        "bb_max_blocks": 20,
+        "bb_snapshot_interval": 1,
+        "bb_external_penalty": 0.25,
+        "bb_size_penalty": 0.01,
     }
     for key, value in defaults.items():
         if hasattr(args, key) and getattr(args, key) is None:
@@ -266,6 +285,13 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
+        "--build-building-blocks", str(bool(args.build_building_blocks)).lower(),
+        "--bb-weight-mode", str(args.bb_weight_mode),
+        "--bb-min-block-size", str(args.bb_min_block_size),
+        "--bb-max-blocks", str(args.bb_max_blocks),
+        "--bb-snapshot-interval", str(args.bb_snapshot_interval),
+        "--bb-external-penalty", str(args.bb_external_penalty),
+        "--bb-size-penalty", str(args.bb_size_penalty),
         "--artifact-layout", str(args.artifact_layout),
         "--write-aggregate-outputs", str(bool(args.write_aggregate_outputs)).lower(),
     ]
@@ -277,6 +303,8 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         ("--graph-snapshot-top-k", args.graph_snapshot_top_k),
         ("--lr-edge-top-k", args.lr_edge_top_k),
         ("--lr-expected-edges", args.lr_expected_edges),
+        ("--bb-gawll-update-interval", args.bb_gawll_update_interval),
+        ("--bb-max-block-size", args.bb_max_block_size),
     ]
     for flag, value in optional_pairs:
         if value is not None:
@@ -342,6 +370,15 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-stability-fraction", type=float, default=None)
     p.add_argument("--lr-edge-min-weight", type=float, default=None)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
+    p.add_argument("--build-building-blocks", type=str2bool, default=None)
+    p.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default=None)
+    p.add_argument("--bb-gawll-update-interval", type=int, default=None)
+    p.add_argument("--bb-min-block-size", type=int, default=None)
+    p.add_argument("--bb-max-block-size", type=int, default=None)
+    p.add_argument("--bb-max-blocks", type=int, default=None)
+    p.add_argument("--bb-snapshot-interval", type=int, default=None)
+    p.add_argument("--bb-external-penalty", type=float, default=None)
+    p.add_argument("--bb-size-penalty", type=float, default=None)
     p.add_argument("--artifact-layout", choices=["both", "nested", "root"], default=None)
     p.add_argument("--write-aggregate-outputs", type=str2bool, default=None)
 
@@ -392,8 +429,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
 def cmd_make_tasks(args: argparse.Namespace) -> int:
     args = fill_defaults(apply_preset(args))
-    # Array jobs should be race-safe by default, unless the user explicitly chose otherwise.
-    if args.artifact_layout == "both":
+    # Array jobs should be race-safe by default because several tasks may write into the same method folder.
+    if args.artifact_layout != "nested":
         args.artifact_layout = "nested"
     if args.write_aggregate_outputs is True:
         args.write_aggregate_outputs = False
@@ -491,11 +528,42 @@ def _chrom_to_bind(chrom: str) -> str:
 
 
 def _trace_path_for_summary(summary_path: Path) -> Path:
+    return _artifact_path_for_summary(summary_path, "generation_trace")
+
+
+def _artifact_path_for_summary(summary_path: Path, base: str) -> Path:
     if summary_path.name == "run_summary.csv":
-        return summary_path.with_name("generation_trace.csv")
+        return summary_path.with_name(f"{base}.csv")
     if summary_path.name.startswith("run_summary_"):
-        return summary_path.with_name(summary_path.name.replace("run_summary_", "generation_trace_", 1))
-    return summary_path.with_name("generation_trace.csv")
+        return summary_path.with_name(summary_path.name.replace("run_summary_", f"{base}_", 1))
+    return summary_path.with_name(f"{base}.csv")
+
+
+def _merge_optional_artifacts(summary_paths: list[Path], method_dir: Path, prefix: str, base: str) -> None:
+    paths = [p for p in (_artifact_path_for_summary(s, base) for s in summary_paths) if p.exists()]
+    if not paths:
+        return
+    rows: list[dict[str, str]] = []
+    header: list[str] = []
+    for path in paths:
+        loaded = _read_one_csv(path)
+        if not loaded:
+            continue
+        for col in loaded[0].keys():
+            if col not in header:
+                header.append(col)
+        rows.extend(loaded)
+    if not rows:
+        return
+    sort_cols = ["repeat_id", "outer_fold", "run_id", "generation", "block_id"]
+    def key(row: dict[str, str]) -> tuple[int, ...]:
+        return tuple(int(float(row.get(c, 0) or 0)) for c in sort_cols if c in row)
+    rows.sort(key=key)
+    with (method_dir / f"{base}_{prefix}.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({c: row.get(c, "") for c in header})
 
 
 def cmd_aggregate(args: argparse.Namespace) -> int:
@@ -579,6 +647,9 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
                 for r in trace_rows:
                     w.writerow({c: r.get(c, "") for c in header})
 
+        _merge_optional_artifacts(summary_paths, method_dir, prefix, "building_block_summary")
+        _merge_optional_artifacts(summary_paths, method_dir, prefix, "building_blocks")
+
         print(f"Aggregated {len(rows)} run(s): {method_dir / ('nested_summary_' + prefix + '.csv')}")
     return 0
 
@@ -622,6 +693,9 @@ if __name__ == "__main__":
 #   --lr-auto-min-samples true `
 #   --lr-expected-edges 50 `
 #   --lr-min-samples-c 2.0 `
+#   --build-building-blocks true `
+#   --bb-weight-mode signed `
+#   --bb-gawll-update-interval 10 `
 #   --save-generation-trace true `
 #   --save-graph-snapshots true `
 #   --graph-snapshot-interval 1
@@ -629,7 +703,7 @@ if __name__ == "__main__":
 # python run_blur_ga.py aggregate --results-root ../Results/results_analysis_test_v2
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/rep00/fold00/run000/graph_snapshots.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/graph_snapshots_c2_a1_rep00_fold00_run000.csv `
 #   --trace ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/generation_trace_c2_a1.csv `
 #   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/empirical_linkage_legacy/selected_features_c2_a1.csv `
 #   --run-id 0 `
@@ -639,7 +713,7 @@ if __name__ == "__main__":
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/graph_snapshots_c2_a2_rep00_fold00_run000.csv `
 #   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/generation_trace_c2_a2.csv `
 #   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_pairwise_lasso/selected_features_c2_a2.csv `
 #   --run-id 0 `
@@ -649,7 +723,7 @@ if __name__ == "__main__":
 #   --layout spring
 
 # python analysis_interactive/make_graph_ui.py `
-#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/rep00/fold00/run000/graph_snapshots.csv `
+#   --snapshots ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/graph_snapshots_c2_a3_rep00_fold00_run000.csv `
 #   --trace ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/generation_trace_c2_a3.csv `
 #   --selected-features ../Results/results_analysis_test_v2/anneal_task363614/blur_ga_main_pairwise_lasso/selected_features_c2_a3.csv `
 #   --run-id 0 `
