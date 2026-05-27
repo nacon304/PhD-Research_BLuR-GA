@@ -10,19 +10,49 @@ RegressionStage = Literal[
     "pairwise_lasso",
     "main_pairwise_lasso",
 ]
+RegressionSolver = Literal[
+    "auto",
+    "sklearn_full",
+    "matrix_free",
+]
+
+
+def _num_pairs(n_features: int) -> int:
+    n = int(n_features)
+    return max(0, n * (n - 1) // 2)
+
+
+def _full_pair_indices(n_features: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return upper-triangular pair indices without constructing Python tuple lists."""
+    i, j = np.triu_indices(int(n_features), k=1)
+    return i.astype(np.int32, copy=False), j.astype(np.int32, copy=False)
 
 
 @dataclass(frozen=True)
 class RegressionLinkageFit:
-    """A fitted regression-linkage graph at one generation."""
+    """A fitted regression-linkage graph at one generation.
+
+    Only non-zero/active coefficients need to be returned.  Older versions kept
+    a Python list with every possible pair, which is expensive for d >> 500.  The
+    graph update only consumes edges with positive weights, so sparse arrays keep
+    the same output semantics while avoiding a large Python-object memory cost.
+    """
 
     generation: int
     n_samples: int
-    pairs: list[tuple[int, int]]
+    pair_i: np.ndarray
+    pair_j: np.ndarray
     coefficients: np.ndarray
     weights: np.ndarray
     stability: np.ndarray
     selected_counts: np.ndarray
+
+
+@dataclass(frozen=True)
+class _PairCoefficientData:
+    pair_i: np.ndarray
+    pair_j: np.ndarray
+    coefficients: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -33,11 +63,12 @@ class _DenseLinearModel:
 
 @dataclass(frozen=True)
 class _DesignData:
-    """Design matrix plus the slice containing pairwise edge coefficients."""
+    """Design matrix plus pairwise edge indices."""
 
     X: np.ndarray
     pair_start: int
-    pairs: list[tuple[int, int]]
+    pair_i: np.ndarray
+    pair_j: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -55,8 +86,10 @@ class _StandardizedDesign:
 
 
 class _RegressionEstimator(Protocol):
-    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Return one coefficient per pair in `pairs`."""
+    alpha: float
+
+    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
+        """Return active pair coefficients."""
 
 
 @dataclass
@@ -88,10 +121,10 @@ class RegressionVIG:
         self.weight = np.zeros(shape, dtype=float)
         self.coefficient = np.zeros(shape, dtype=float)
         self.stability = np.zeros(shape, dtype=float)
-        self.selected_count = np.zeros(shape, dtype=int)
-        self.tested_count = np.zeros(shape, dtype=int)
-        self.first_seen_generation = np.full(shape, -1, dtype=int)
-        self.last_updated_generation = np.full(shape, -1, dtype=int)
+        self.selected_count = np.zeros(shape, dtype=np.int32)
+        self.tested_count = np.zeros(shape, dtype=np.int32)
+        self.first_seen_generation = np.full(shape, -1, dtype=np.int32)
+        self.last_updated_generation = np.full(shape, -1, dtype=np.int32)
 
     @property
     def n_edges(self) -> int:
@@ -116,19 +149,36 @@ class RegressionVIG:
         new_selected = np.zeros_like(self.selected_count)
         new_tested = np.zeros_like(self.tested_count)
 
-        candidate_rows: list[tuple[int, int, float, float, float, int]] = []
-        for idx, (i, j) in enumerate(fit.pairs):
-            w = float(fit.weights[idx])
-            c = float(fit.coefficients[idx])
-            st = float(fit.stability[idx])
-            sc = int(fit.selected_counts[idx])
-            if w >= min_abs_weight and w > 0.0:
-                candidate_rows.append((int(i), int(j), w, c, st, sc))
-        candidate_rows.sort(key=lambda r: (-r[2], r[0], r[1]))
-        if top_k is not None:
-            candidate_rows = candidate_rows[: int(top_k)]
+        if fit.weights.size == 0:
+            self.weight = new_weight
+            self.coefficient = new_coef
+            self.stability = new_stability
+            self.selected_count = new_selected
+            self.tested_count = new_tested
+            return
 
-        for i, j, w, c, st, sc in candidate_rows:
+        mask = np.asarray(fit.weights > max(0.0, float(min_abs_weight))).reshape(-1)
+        if not np.any(mask):
+            self.weight = new_weight
+            self.coefficient = new_coef
+            self.stability = new_stability
+            self.selected_count = new_selected
+            self.tested_count = new_tested
+            return
+
+        idx = np.flatnonzero(mask)
+        order = np.lexsort((fit.pair_j[idx], fit.pair_i[idx], -fit.weights[idx]))
+        idx = idx[order]
+        if top_k is not None:
+            idx = idx[: int(top_k)]
+
+        for k in idx:
+            i = int(fit.pair_i[k])
+            j = int(fit.pair_j[k])
+            w = float(fit.weights[k])
+            c = float(fit.coefficients[k])
+            st = float(fit.stability[k])
+            sc = int(fit.selected_counts[k])
             new_weight[i, j] = new_weight[j, i] = w
             new_coef[i, j] = new_coef[j, i] = c
             new_stability[i, j] = new_stability[j, i] = st
@@ -145,13 +195,7 @@ class RegressionVIG:
         self.tested_count = new_tested
 
     def touch_fit_metadata(self, generation: int, n_samples: int) -> None:
-        """Refresh fit metadata when the regression input archive is unchanged.
-
-        Re-fitting on the identical archive would produce the same coefficients,
-        weights, stability, and selected counts.  This method preserves the
-        generation-level metadata that output files expect without paying the
-        regression cost again.
-        """
+        """Refresh fit metadata when the regression input archive is unchanged."""
         self.last_fit_generation = int(generation)
         self.last_n_samples = int(n_samples)
         active = self.weight > 0.0
@@ -237,27 +281,28 @@ class RegressionVIG:
 
 
 class PairwiseDesignBuilder:
-    """Build bipolar main-effect and pairwise-monomial designs.
+    """Build 0/1 main-effect and active pairwise-monomial designs.
 
-    BLuR-GA now keeps only the theory-aligned Lasso linkage stages.  Therefore
-    all regression designs use u_i = 2 x_i - 1 instead of the older 0/1 dense
-    regression encoding.
+    Pairwise columns are ordinary binary monomials ``x_i * x_j``.  A pair only
+    contributes signal on archive rows where both features are active; pairs that
+    have never co-occurred have zero-variance columns and are ignored by Lasso.
     """
 
     def __init__(self, n_features: int, *, include_main: bool) -> None:
         self.n_features = int(n_features)
         self.include_main = bool(include_main)
-        self.pairs = [(i, j) for i in range(self.n_features) for j in range(i + 1, self.n_features)]
-        self._pair_i = np.asarray([i for i, _ in self.pairs], dtype=int) if self.pairs else np.empty(0, dtype=int)
-        self._pair_j = np.asarray([j for _, j in self.pairs], dtype=int) if self.pairs else np.empty(0, dtype=int)
+        self._pair_i, self._pair_j = _full_pair_indices(self.n_features)
+
+    @property
+    def n_pairs(self) -> int:
+        return int(self._pair_i.size)
 
     def _main_matrix(self, X_bits: np.ndarray) -> np.ndarray:
-        X = np.asarray(X_bits, dtype=np.float64)
-        return 2.0 * X - 1.0
+        return np.asarray(X_bits, dtype=np.float64)
 
     def build(self, X_bits: np.ndarray) -> _DesignData:
         main = self._main_matrix(X_bits)
-        if len(self.pairs) == 0:
+        if self.n_pairs == 0:
             pairs = np.empty((main.shape[0], 0), dtype=float)
         else:
             pairs = main[:, self._pair_i] * main[:, self._pair_j]
@@ -267,7 +312,7 @@ class PairwiseDesignBuilder:
         else:
             X_design = pairs
             pair_start = 0
-        return _DesignData(np.ascontiguousarray(X_design, dtype=np.float64), pair_start, self.pairs)
+        return _DesignData(np.ascontiguousarray(X_design, dtype=np.float64), pair_start, self._pair_i, self._pair_j)
 
     def main_effect_matrix_with_intercept(self, X_bits: np.ndarray) -> np.ndarray:
         main = self._main_matrix(X_bits)
@@ -275,35 +320,23 @@ class PairwiseDesignBuilder:
 
 
 class PairwiseLassoEstimator:
-    """Theory-aligned pairwise Lasso: y ~= sum theta_ij u_i u_j.
-
-    The response is centered before this estimator is called. Pairwise columns
-    are built with u_i = 2x_i - 1, centered, and normalized to ||Z_j||_2=sqrt(n),
-    matching the fixed-design Lasso proof assumptions as closely as possible.
-    """
+    """Pairwise Lasso on binary active-pair monomials: y ~= sum theta_ij x_i x_j."""
 
     def __init__(self, *, design_builder: PairwiseDesignBuilder, alpha: float, random_state: int) -> None:
         self.design_builder = design_builder
         self.alpha = float(alpha)
         self.random_state = int(random_state)
 
-    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
         design = self.design_builder.build(X_bits)
         z = _standardize_for_lasso(design.X)
         model = _fit_sklearn_lasso(z.X, y, alpha=self.alpha, random_state=self.random_state)
-        return z.unscale_coefficients(np.asarray(model.coef_, dtype=float))
+        coef = z.unscale_coefficients(np.asarray(model.coef_, dtype=float))
+        return _active_pair_coefficients(design.pair_i, design.pair_j, coef)
 
 
 class PartialMainPairwiseLassoEstimator:
-    """Theory-aligned Main+Pairwise Lasso using unpenalized main controls.
-
-    This implements the residualized/partial Lasso theorem:
-
-        y_tilde = M_[1,U] y,     Z_tilde = M_[1,U] Z,
-        theta_hat = argmin 1/(2n)||y_tilde - Z_tilde theta||^2 + lambda||theta||_1.
-
-    Main effects are controls and are not treated as graph edges.
-    """
+    """Main-controlled pairwise Lasso using unpenalized main controls."""
 
     def __init__(self, *, design_builder: PairwiseDesignBuilder, alpha: float, random_state: int) -> None:
         self.design_builder = design_builder
@@ -314,19 +347,190 @@ class PartialMainPairwiseLassoEstimator:
         self.alpha = float(alpha)
         self.random_state = int(random_state)
 
-    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
         pair_design = self.pairwise_builder.build(X_bits)
         controls = self.design_builder.main_effect_matrix_with_intercept(X_bits)
         y_col = np.asarray(y, dtype=np.float64).reshape(-1, 1)
-        # Residualize y and all pairwise columns with a single projection. This
-        # avoids recomputing the same control decomposition for thousands of
-        # pairwise columns.
         resid = _residualize(np.hstack([y_col, pair_design.X]), controls)
         y_resid = resid[:, 0]
         z_resid = resid[:, 1:]
         z = _standardize_for_lasso(z_resid)
         model = _fit_sklearn_lasso(z.X, y_resid, alpha=self.alpha, random_state=self.random_state)
-        return z.unscale_coefficients(np.asarray(model.coef_, dtype=float))
+        coef = z.unscale_coefficients(np.asarray(model.coef_, dtype=float))
+        return _active_pair_coefficients(pair_design.pair_i, pair_design.pair_j, coef)
+
+
+class MatrixFreePairwiseLassoEstimator:
+    """Matrix-free proximal Lasso for binary active-pair monomials.
+
+    It optimizes the same standardized pairwise objective as the dense Lasso path
+    without creating Z in R^{n x d(d-1)/2}.  Pair columns exist implicitly as
+    ``z_ij = x_i * x_j``.  Jointly inactive features therefore contribute zero signal.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_features: int,
+        alpha: float,
+        random_state: int,
+        include_main_controls: bool = False,
+        max_iter: int = 8,
+        tol: float = 1e-4,
+        step_scale: float = 1.0,
+        dtype: str = "float64",
+    ) -> None:
+        self.n_features = int(n_features)
+        self.alpha = float(alpha)
+        self.random_state = int(random_state)
+        self.include_main_controls = bool(include_main_controls)
+        self.max_iter = int(max(1, max_iter))
+        self.tol = float(max(0.0, tol))
+        self.step_scale = float(max(1e-12, step_scale))
+        self.dtype = np.float32 if str(dtype) == "float32" else np.float64
+
+    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
+        X = np.asarray(X_bits, dtype=self.dtype)
+        y_arr = np.asarray(y, dtype=self.dtype).reshape(-1)
+        n, d = X.shape
+        if n < 2 or d < 2:
+            empty = np.empty(0, dtype=np.int32)
+            return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
+
+        # Binary active-pair monomial moments.  For z_ij = x_i*x_j in {0,1},
+        # E[z_ij^2] = E[z_ij], so Var(z_ij) = p_ij*(1-p_ij).  Pairs that never
+        # co-occur have p_ij=0, inv_scale=0, and cannot produce coefficients.
+        pair_mean = (X.T @ X).astype(self.dtype, copy=False) / self.dtype(n)
+        np.fill_diagonal(pair_mean, 0.0)
+        pair_var = np.maximum(pair_mean * (self.dtype(1.0) - pair_mean), self.dtype(0.0)).astype(self.dtype, copy=False)
+        active_pair = pair_var > self.dtype(1e-12)
+        inv_scale = np.zeros_like(pair_var, dtype=self.dtype)
+        inv_scale[active_pair] = self.dtype(1.0) / np.sqrt(pair_var[active_pair]).astype(self.dtype, copy=False)
+        np.fill_diagonal(inv_scale, 0.0)
+
+        y_target = y_arr
+        q_controls: np.ndarray | None = None
+        if self.include_main_controls:
+            controls = np.hstack([np.ones((n, 1), dtype=self.dtype), X])
+            q_controls = _orthonormal_basis(controls)
+            y_target = _residualize_with_basis(y_arr, q_controls).astype(self.dtype, copy=False)
+
+        # W stores standardized pair coefficients symmetrically.  The diagonal is
+        # fixed at zero because self-interactions are not graph edges.
+        W = np.zeros((d, d), dtype=self.dtype)
+        p = max(1, int(np.count_nonzero(np.triu(active_pair, k=1))))
+        step0 = self.dtype(self.step_scale * max(1, n) / float(max(1, p)))
+
+        for _ in range(self.max_iter):
+            pred = _matrix_free_pair_predict(X, W, pair_mean, inv_scale)
+            if q_controls is not None:
+                pred = _residualize_with_basis(pred, q_controls).astype(self.dtype, copy=False)
+            resid = (pred - y_target).astype(self.dtype, copy=False)
+            grad_raw = (X.T @ (resid[:, None] * X)).astype(self.dtype, copy=False) / self.dtype(n)
+            resid_mean = self.dtype(float(np.mean(resid)))
+            grad = (grad_raw - resid_mean * pair_mean) * inv_scale
+            np.fill_diagonal(grad, 0.0)
+
+            # Fixed-step ISTA with a cheap numerical safety loop.  Full objective
+            # backtracking is too expensive at high d because each objective check
+            # requires another implicit pairwise prediction.
+            step = step0
+            W_new = W
+            for _bt in range(8):
+                W_candidate = _soft_threshold_matrix(W - step * grad, float(self.alpha) * float(step))
+                np.fill_diagonal(W_candidate, 0.0)
+                W_candidate = ((W_candidate + W_candidate.T) * self.dtype(0.5)).astype(self.dtype, copy=False)
+                max_abs = float(np.max(np.abs(W_candidate))) if W_candidate.size else 0.0
+                if np.isfinite(max_abs) and max_abs <= 1e6:
+                    W_new = W_candidate
+                    break
+                step = self.dtype(float(step) * 0.5)
+
+            diff = float(np.max(np.abs(W_new - W)))
+            W = W_new
+            if self.tol > 0.0 and diff < self.tol:
+                break
+
+        raw_coef = (W * inv_scale).astype(np.float64, copy=False)
+        np.fill_diagonal(raw_coef, 0.0)
+        return _active_pair_coefficients_from_matrix(raw_coef)
+
+
+def _matrix_free_pair_predict(X: np.ndarray, Wstd: np.ndarray, pair_mean: np.ndarray, inv_scale: np.ndarray) -> np.ndarray:
+    A = Wstd * inv_scale
+    quad = 0.5 * np.einsum("bi,ij,bj->b", X, A, X, optimize=True)
+    offset = 0.5 * np.sum(Wstd * pair_mean * inv_scale)
+    return np.asarray(quad - offset, dtype=X.dtype)
+
+
+def _matrix_free_objective(
+    X: np.ndarray,
+    Wstd: np.ndarray,
+    pair_mean: np.ndarray,
+    inv_scale: np.ndarray,
+    y_target: np.ndarray,
+    q_controls: np.ndarray | None,
+    alpha: float,
+) -> float:
+    pred = _matrix_free_pair_predict(X, Wstd, pair_mean, inv_scale)
+    if q_controls is not None:
+        pred = _residualize_with_basis(pred, q_controls).astype(X.dtype, copy=False)
+    resid = pred - y_target
+    return float(0.5 * np.mean(np.square(resid)) + float(alpha) * np.sum(np.abs(np.triu(Wstd, k=1))))
+
+
+def _soft_threshold_matrix(X: np.ndarray, tau: float) -> np.ndarray:
+    return (np.sign(X) * np.maximum(np.abs(X) - float(tau), 0.0)).astype(X.dtype, copy=False)
+
+
+def _orthonormal_basis(controls: np.ndarray) -> np.ndarray:
+    C = np.asarray(controls, dtype=np.float64)
+    if C.size == 0:
+        return np.empty((C.shape[0], 0), dtype=np.float64)
+    try:
+        U, s, _ = np.linalg.svd(C, full_matrices=False)
+        if s.size == 0:
+            return np.empty((C.shape[0], 0), dtype=np.float64)
+        tol = np.finfo(float).eps * max(C.shape) * float(s[0])
+        rank = int(np.sum(s > tol))
+        return np.ascontiguousarray(U[:, :rank], dtype=np.float64)
+    except np.linalg.LinAlgError:
+        Q, _ = np.linalg.qr(C)
+        return np.ascontiguousarray(Q, dtype=np.float64)
+
+
+def _residualize_with_basis(v: np.ndarray, Q: np.ndarray | None) -> np.ndarray:
+    arr = np.asarray(v, dtype=np.float64)
+    if Q is None or Q.size == 0:
+        return arr.copy()
+    return np.nan_to_num(arr - Q @ (Q.T @ arr), nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _active_pair_coefficients(pair_i: np.ndarray, pair_j: np.ndarray, coef: np.ndarray, *, tol: float = 1e-12) -> _PairCoefficientData:
+    coef_arr = np.nan_to_num(np.asarray(coef, dtype=np.float64).reshape(-1), nan=0.0, posinf=0.0, neginf=0.0)
+    mask = np.abs(coef_arr) > float(tol)
+    if not np.any(mask):
+        empty = np.empty(0, dtype=np.int32)
+        return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
+    return _PairCoefficientData(
+        np.asarray(pair_i[mask], dtype=np.int32),
+        np.asarray(pair_j[mask], dtype=np.int32),
+        np.asarray(coef_arr[mask], dtype=np.float64),
+    )
+
+
+def _active_pair_coefficients_from_matrix(coef_matrix: np.ndarray, *, tol: float = 1e-6) -> _PairCoefficientData:
+    upper = np.triu(np.abs(coef_matrix) > float(tol), k=1)
+    if not np.any(upper):
+        empty = np.empty(0, dtype=np.int32)
+        return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
+    pair_i, pair_j = np.nonzero(upper)
+    coefs = coef_matrix[pair_i, pair_j]
+    return _PairCoefficientData(
+        np.asarray(pair_i, dtype=np.int32),
+        np.asarray(pair_j, dtype=np.int32),
+        np.asarray(coefs, dtype=np.float64),
+    )
 
 
 def _fit_sklearn_lasso(X: np.ndarray, y: np.ndarray, *, alpha: float, random_state: int):
@@ -353,8 +557,6 @@ def _standardize_for_lasso(X: np.ndarray) -> _StandardizedDesign:
         return _StandardizedDesign(X_arr.copy(), np.zeros(X_arr.shape[1]), np.ones(X_arr.shape[1]))
     means = np.mean(X_arr, axis=0)
     centered = X_arr - means
-    # sklearn Lasso uses 1/(2n)||y-Xb||^2 + alpha||b||_1. Scaling columns to
-    # sqrt(n) makes each column satisfy (1/n)||Z_j||^2 = 1, as in the proof.
     norm = np.linalg.norm(centered, axis=0)
     target = np.sqrt(max(1, X_arr.shape[0]))
     scales = norm / target
@@ -376,10 +578,6 @@ def _residualize(A: np.ndarray, controls: np.ndarray) -> np.ndarray:
     if C.size == 0:
         return A_arr.copy()
     try:
-        # Orthogonal projection using only the left singular vectors of the
-        # control design. This computes the same least-squares residual M_C A as
-        # np.linalg.lstsq(C, A), but avoids solving for every RHS coefficient
-        # when A has thousands of pairwise columns.
         U, s, _ = np.linalg.svd(C, full_matrices=False)
         if s.size == 0:
             return A_arr.copy()
@@ -410,6 +608,12 @@ class RegressionLinkageLearner:
         stability_subsamples: int = 0,
         stability_fraction: float = 0.75,
         random_state: int = 1,
+        solver: RegressionSolver = "auto",
+        matrix_free_threshold: int = 700,
+        matrix_free_max_iter: int = 8,
+        matrix_free_tol: float = 1e-4,
+        matrix_free_step_scale: float = 1.0,
+        matrix_free_dtype: str = "float64",
     ) -> None:
         self.n_features = int(n_features)
         self.stage = stage
@@ -420,7 +624,13 @@ class RegressionLinkageLearner:
         self.stability_subsamples = int(stability_subsamples)
         self.stability_fraction = float(stability_fraction)
         self.random_state = int(random_state)
-        self.pairs = [(i, j) for i in range(self.n_features) for j in range(i + 1, self.n_features)]
+        self.solver = str(solver)
+        self.matrix_free_threshold = int(matrix_free_threshold)
+        self.matrix_free_max_iter = int(matrix_free_max_iter)
+        self.matrix_free_tol = float(matrix_free_tol)
+        self.matrix_free_step_scale = float(matrix_free_step_scale)
+        self.matrix_free_dtype = str(matrix_free_dtype)
+        self.n_pairs = _num_pairs(self.n_features)
         self._rng = np.random.default_rng(self.random_state)
         self._estimator = self._build_estimator()
 
@@ -432,7 +642,27 @@ class RegressionLinkageLearner:
     def use_sparse_model(self) -> bool:
         return True
 
+    @property
+    def active_solver(self) -> str:
+        if self.solver == "matrix_free":
+            return "matrix_free"
+        if self.solver == "sklearn_full":
+            return "sklearn_full"
+        return "matrix_free" if self.n_features >= self.matrix_free_threshold else "sklearn_full"
+
     def _build_estimator(self) -> _RegressionEstimator:
+        solver = self.active_solver
+        if solver == "matrix_free":
+            return MatrixFreePairwiseLassoEstimator(
+                n_features=self.n_features,
+                alpha=self.sparse_alpha,
+                random_state=self.random_state,
+                include_main_controls=self.include_main_effects,
+                max_iter=self.matrix_free_max_iter,
+                tol=self.matrix_free_tol,
+                step_scale=self.matrix_free_step_scale,
+                dtype=self.matrix_free_dtype,
+            )
         if self.stage == "pairwise_lasso":
             return PairwiseLassoEstimator(
                 design_builder=PairwiseDesignBuilder(self.n_features, include_main=False),
@@ -457,7 +687,7 @@ class RegressionLinkageLearner:
             return float(self.sparse_alpha)
         y_arr = np.asarray(y_reg, dtype=np.float64).reshape(-1)
         n = int(n_samples if n_samples is not None else y_arr.size)
-        p = int(p_columns if p_columns is not None else len(self.pairs))
+        p = int(p_columns if p_columns is not None else self.n_pairs)
         if n < 2 or p < 1:
             return float(self.sparse_alpha)
         sigma_hat = float(np.std(y_arr, ddof=1))
@@ -469,7 +699,7 @@ class RegressionLinkageLearner:
         log_term = max(0.0, float(np.log((2.0 * max(1, p)) / delta)))
         return float(self.alpha_c) * sigma_hat * float(np.sqrt((2.0 * log_term) / float(n)))
 
-    def _fit_with_current_alpha(self, X_bits: np.ndarray, y_reg: np.ndarray, *, alpha: float) -> np.ndarray:
+    def _fit_with_current_alpha(self, X_bits: np.ndarray, y_reg: np.ndarray, *, alpha: float) -> _PairCoefficientData:
         old_alpha = getattr(self._estimator, "alpha", None)
         if old_alpha is not None:
             setattr(self._estimator, "alpha", float(alpha))
@@ -487,40 +717,53 @@ class RegressionLinkageLearner:
         if len(X_bits) != len(y):
             raise ValueError("chromosomes and fitness must have the same length.")
         if len(X_bits) < 2:
-            zeros = np.zeros(len(self.pairs), dtype=float)
-            return RegressionLinkageFit(generation, len(X_bits), self.pairs, zeros, zeros, zeros, zeros.astype(int))
+            empty = np.empty(0, dtype=np.int32)
+            return RegressionLinkageFit(generation, len(X_bits), empty, empty, np.empty(0), np.empty(0), np.empty(0), np.empty(0, dtype=np.int32))
 
         y_reg = y - float(np.mean(y))
-        alpha_g = self.theory_alpha(y_reg, n_samples=len(X_bits), p_columns=len(self.pairs))
-        pair_coef = self._fit_with_current_alpha(X_bits, y_reg, alpha=alpha_g)
-        pair_coef = np.nan_to_num(pair_coef, nan=0.0, posinf=0.0, neginf=0.0)
+        alpha_g = self.theory_alpha(y_reg, n_samples=len(X_bits), p_columns=self.n_pairs)
+        pair_data = self._fit_with_current_alpha(X_bits, y_reg, alpha=alpha_g)
+        pair_coef = np.nan_to_num(pair_data.coefficients, nan=0.0, posinf=0.0, neginf=0.0)
 
         stability = np.ones_like(pair_coef, dtype=float)
-        selected_counts = (np.abs(pair_coef) > 1e-12).astype(int)
-        if self.stability_subsamples > 0 and len(X_bits) >= 4:
-            stability, selected_counts = self._stability_selection(X_bits, y_reg)
+        selected_counts = (np.abs(pair_coef) > 1e-12).astype(np.int32)
+        if self.stability_subsamples > 0 and len(X_bits) >= 4 and self.active_solver == "sklearn_full":
+            stability, selected_counts = self._stability_selection_dense(X_bits, y_reg, pair_data)
 
         weights = np.abs(pair_coef) * stability
         return RegressionLinkageFit(
             generation=int(generation),
             n_samples=int(len(X_bits)),
-            pairs=self.pairs,
+            pair_i=pair_data.pair_i,
+            pair_j=pair_data.pair_j,
             coefficients=pair_coef,
             weights=weights,
             stability=stability,
             selected_counts=selected_counts,
         )
 
-    def _stability_selection(self, X_bits: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _stability_selection_dense(self, X_bits: np.ndarray, y: np.ndarray, base_data: _PairCoefficientData) -> tuple[np.ndarray, np.ndarray]:
+        """Stability counts for active dense-solver edges.
+
+        Stability selection is intentionally limited to the dense small-d path;
+        for large matrix-free runs, repeatedly fitting the full pairwise model is
+        usually too expensive and defaults remain zero subsamples.
+        """
         n = len(y)
+        if base_data.coefficients.size == 0:
+            return np.empty(0, dtype=float), np.empty(0, dtype=np.int32)
+        key_to_pos = {(int(i), int(j)): pos for pos, (i, j) in enumerate(zip(base_data.pair_i, base_data.pair_j))}
+        counts = np.zeros(base_data.coefficients.size, dtype=np.int32)
         m = max(2, min(n, int(round(self.stability_fraction * n))))
-        counts = np.zeros(len(self.pairs), dtype=int)
         for _ in range(self.stability_subsamples):
             idx = self._rng.choice(n, size=m, replace=False)
             y_sub = y[idx]
-            alpha_sub = self.theory_alpha(y_sub, n_samples=m, p_columns=len(self.pairs))
-            coef = self._fit_with_current_alpha(X_bits[idx], y_sub, alpha=alpha_sub)
-            counts += (np.abs(coef) > 1e-12).astype(int)
+            alpha_sub = self.theory_alpha(y_sub, n_samples=m, p_columns=self.n_pairs)
+            data = self._fit_with_current_alpha(X_bits[idx], y_sub, alpha=alpha_sub)
+            for i, j in zip(data.pair_i, data.pair_j):
+                pos = key_to_pos.get((int(i), int(j)))
+                if pos is not None:
+                    counts[pos] += 1
         stability = counts.astype(float) / max(1, self.stability_subsamples)
         return stability, counts
 

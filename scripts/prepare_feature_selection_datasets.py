@@ -103,8 +103,20 @@ class DatasetSpec:
 
 DATASET_SPECS: tuple[DatasetSpec, ...] = (
     # ------------------------------------------------------------------
-    # Small tabular datasets.
+    # Small tabular datasets, sorted by N.
     # ------------------------------------------------------------------
+    DatasetSpec(
+        key="zoo_uci",
+        group="small_tabular",
+        display_name="Zoo",
+        source="UCI",
+        expected_n_samples=101,
+        expected_n_features_raw=16,
+        expected_n_classes=7,
+        loader="uci_zoo",
+        urls=(f"{UCI_BASE}/zoo/zoo.data",),
+        notes="Animal name/id column is dropped; the final class column is used as the target.",
+    ),
     DatasetSpec(
         key="lymphography_uci",
         group="small_tabular",
@@ -115,6 +127,17 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         expected_n_classes=4,
         loader="uci_lymphography",
         urls=(f"{UCI_BASE}/lymphography/lymphography.data",),
+    ),
+    DatasetSpec(
+        key="parkinsons_uci",
+        group="small_tabular",
+        display_name="Parkinsons",
+        source="UCI",
+        expected_n_samples=195,
+        expected_n_features_raw=22,
+        expected_n_classes=2,
+        loader="uci_parkinsons",
+        urls=(f"{UCI_BASE}/parkinsons/parkinsons.data",),
     ),
     DatasetSpec(
         key="sonar_uci",
@@ -128,17 +151,6 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         urls=(f"{UCI_BASE}/undocumented/connectionist-bench/sonar/sonar.all-data",),
     ),
     DatasetSpec(
-        key="ionosphere_uci",
-        group="small_tabular",
-        display_name="Ionosphere",
-        source="UCI",
-        expected_n_samples=351,
-        expected_n_features_raw=34,
-        expected_n_classes=2,
-        loader="uci_ionosphere",
-        urls=(f"{UCI_BASE}/ionosphere/ionosphere.data",),
-    ),
-    DatasetSpec(
         key="heart_disease_uci",
         group="small_tabular",
         display_name="Heart Disease",
@@ -149,6 +161,29 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         loader="uci_heart",
         urls=(f"{UCI_BASE}/heart-disease/processed.cleveland.data",),
         notes="Cleveland heart-disease target is binarised as disease/no-disease.",
+    ),
+    DatasetSpec(
+        key="dermatology_uci",
+        group="small_tabular",
+        display_name="Dermatology",
+        source="UCI",
+        expected_n_samples=366,
+        expected_n_features_raw=34,
+        expected_n_classes=6,
+        loader="uci_dermatology",
+        urls=(f"{UCI_BASE}/dermatology/dermatology.data",),
+    ),
+    DatasetSpec(
+        key="wdbc_uci",
+        group="small_tabular",
+        display_name="WDBC",
+        source="UCI",
+        expected_n_samples=569,
+        expected_n_features_raw=30,
+        expected_n_classes=2,
+        loader="uci_wdbc",
+        urls=(f"{UCI_BASE}/breast-cancer-wisconsin/wdbc.data",),
+        notes="Sample ID column is dropped; diagnosis M/B is used as the target.",
     ),
     DatasetSpec(
         key="australian_credit_uci_openml",
@@ -172,30 +207,9 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         loader="uci_vehicle",
         urls=tuple(f"{UCI_BASE}/statlog/vehicle/x{suffix}.dat" for suffix in ("aa", "ab", "ac", "ad", "ae", "af", "ag", "ah", "ai")),
     ),
-    DatasetSpec(
-        key="hepatitis_uci",
-        group="small_tabular",
-        display_name="Hepatitis",
-        source="UCI",
-        expected_n_samples=155,
-        expected_n_features_raw=19,
-        expected_n_classes=2,
-        loader="uci_hepatitis",
-        urls=(f"{UCI_BASE}/hepatitis/hepatitis.data",),
-    ),
-    DatasetSpec(
-        key="parkinsons_uci",
-        group="small_tabular",
-        display_name="Parkinsons",
-        source="UCI",
-        expected_n_samples=195,
-        expected_n_features_raw=22,
-        expected_n_classes=2,
-        loader="uci_parkinsons",
-        urls=(f"{UCI_BASE}/parkinsons/parkinsons.data",),
-    ),
+
     # ------------------------------------------------------------------
-    # Medium tabular datasets.
+    # Medium tabular datasets, sorted by N.
     # ------------------------------------------------------------------
     DatasetSpec(
         key="credit-g_task363611",
@@ -214,12 +228,12 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         group="medium_tabular",
         display_name="QSAR biodeg",
         source="UCI / OpenML",
-        expected_n_samples=1054,
-        expected_n_features_raw=42,
+        expected_n_samples=1055,
+        expected_n_features_raw=41,
         expected_n_classes=2,
-        loader="openml",
-        openml_data_id=1494,
-        openml_name="qsar-biodeg",
+        loader="uci_qsar_biodeg",
+        urls=(f"{UCI_BASE}/00254/biodeg.csv",),
+        notes="UCI QSAR biodegradation contains 41 molecular descriptors plus one class column; OpenML/TabArena lists the same dataset as 1.05k x 42 including the target column.",
     ),
     DatasetSpec(
         key="website_phishing_task363707",
@@ -245,19 +259,6 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         openml_data_id=46943,
         openml_name="MIC",
     ),
-    # Kept in medium_tabular because this is the grouping in the current table.
-    # If you want grouping by dimensionality, move Isolet_asu to medium_highdim.
-    DatasetSpec(
-        key="Isolet_asu",
-        group="medium_tabular",
-        display_name="Isolet",
-        source="ASU / scikit-feature / UCI",
-        expected_n_samples=1560,
-        expected_n_features_raw=617,
-        expected_n_classes=26,
-        loader="asu_mat",
-        asu_mat_name="Isolet.mat",
-    ),
     DatasetSpec(
         key="Is-this-a-good-customer_task363682",
         group="medium_tabular",
@@ -279,6 +280,18 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         expected_n_classes=2,
         loader="openml",
         openml_data_id=46940,
+    ),
+    DatasetSpec(
+        key="segment_openml_cc18_uci",
+        group="medium_tabular",
+        display_name="Segment",
+        source="OpenML-CC18 / UCI",
+        expected_n_samples=2310,
+        expected_n_features_raw=19,
+        expected_n_classes=7,
+        loader="openml",
+        openml_data_id=40984,
+        openml_name="segment",
     ),
     DatasetSpec(
         key="hazelnut-spread-contaminant-detection_task363674",
@@ -315,65 +328,10 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         urls=(f"{UCI_BASE}/molecular-biology/splice-junction-gene-sequences/splice.data",),
         notes="UCI file has class, sequence id, and DNA string. The sequence id is dropped; the DNA string is expanded to per-position categorical features.",
     ),
-    DatasetSpec(
-        key="segment_openml_cc18_uci",
-        group="medium_tabular",
-        display_name="Segment",
-        source="OpenML-CC18 / UCI",
-        expected_n_samples=2310,
-        expected_n_features_raw=19,
-        expected_n_classes=7,
-        loader="openml",
-        openml_data_id=40984,
-        openml_name="segment",
-    ),
+
     # ------------------------------------------------------------------
-    # Medium high-dimensional datasets.
+    # Medium high-dimensional datasets, sorted by d.
     # ------------------------------------------------------------------
-    DatasetSpec(
-        key="ORL_asu",
-        group="medium_highdim",
-        display_name="ORL",
-        source="ASU / scikit-feature",
-        expected_n_samples=400,
-        expected_n_features_raw=1024,
-        expected_n_classes=40,
-        loader="asu_mat",
-        asu_mat_name="ORL.mat",
-    ),
-    DatasetSpec(
-        key="warpAR10P_asu",
-        group="medium_highdim",
-        display_name="warpAR10P",
-        source="ASU / scikit-feature",
-        expected_n_samples=130,
-        expected_n_features_raw=2400,
-        expected_n_classes=10,
-        loader="asu_mat",
-        asu_mat_name="warpAR10P.mat",
-    ),
-    DatasetSpec(
-        key="warpPIE10P_asu",
-        group="medium_highdim",
-        display_name="warpPIE10P",
-        source="ASU / scikit-feature",
-        expected_n_samples=210,
-        expected_n_features_raw=2420,
-        expected_n_classes=10,
-        loader="asu_mat",
-        asu_mat_name="warpPIE10P.mat",
-    ),
-    DatasetSpec(
-        key="Yale_asu",
-        group="medium_highdim",
-        display_name="Yale",
-        source="ASU / scikit-feature",
-        expected_n_samples=165,
-        expected_n_features_raw=1024,
-        expected_n_classes=15,
-        loader="asu_mat",
-        asu_mat_name="Yale.mat",
-    ),
     DatasetSpec(
         key="lung_discrete_asu",
         group="medium_highdim",
@@ -386,6 +344,52 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         asu_mat_name="lung_discrete.mat",
     ),
     DatasetSpec(
+        key="Isolet_asu",
+        group="medium_highdim",
+        display_name="Isolet",
+        source="ASU / scikit-feature / UCI",
+        expected_n_samples=1560,
+        expected_n_features_raw=617,
+        expected_n_classes=26,
+        loader="asu_mat",
+        asu_mat_name="Isolet.mat",
+    ),
+    DatasetSpec(
+        key="ORL_asu",
+        group="medium_highdim",
+        display_name="ORL",
+        source="ASU / scikit-feature",
+        expected_n_samples=400,
+        expected_n_features_raw=1024,
+        expected_n_classes=40,
+        loader="asu_mat",
+        asu_mat_name="ORL.mat",
+    ),
+    DatasetSpec(
+        key="hiva_agnostic_task363677",
+        group="medium_highdim",
+        display_name="HIV agnostic",
+        source="NIPS / OpenML",
+        expected_n_samples=3845,
+        expected_n_features_raw=1618,
+        expected_n_classes=3,
+        loader="openml",
+        openml_data_id=46933,
+        openml_name="hiva_agnostic",
+    ),
+    DatasetSpec(
+        key="Bioresponse_task363620",
+        group="medium_highdim",
+        display_name="Bioresponse",
+        source="OpenML / TabArena",
+        expected_n_samples=3751,
+        expected_n_features_raw=1777,
+        expected_n_classes=2,
+        loader="openml",
+        openml_data_id=46912,
+        openml_name="Bioresponse",
+    ),
+    DatasetSpec(
         key="colon_asu",
         group="medium_highdim",
         display_name="Colon",
@@ -396,19 +400,31 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         loader="asu_mat",
         asu_mat_name="colon.mat",
     ),
+    DatasetSpec(
+        key="warpPIE10P_asu",
+        group="medium_highdim",
+        display_name="warpPIE10P",
+        source="ASU / scikit-feature",
+        expected_n_samples=210,
+        expected_n_features_raw=2420,
+        expected_n_classes=10,
+        loader="asu_mat",
+        asu_mat_name="warpPIE10P.mat",
+    ),
+
     # ------------------------------------------------------------------
-    # Large high-dimensional datasets.
+    # Large high-dimensional datasets, sorted by d.
     # ------------------------------------------------------------------
     DatasetSpec(
-        key="GLIOMA_asu",
+        key="PCMAC_asu",
         group="large_highdim",
-        display_name="GLIOMA",
+        display_name="PCMAC",
         source="ASU / scikit-feature",
-        expected_n_samples=50,
-        expected_n_features_raw=4434,
-        expected_n_classes=4,
+        expected_n_samples=1943,
+        expected_n_features_raw=3289,
+        expected_n_classes=2,
         loader="asu_mat",
-        asu_mat_name="GLIOMA.mat",
+        asu_mat_name="PCMAC.mat",
     ),
     DatasetSpec(
         key="Lung_asu",
@@ -433,15 +449,37 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         asu_mat_name="lymphoma.mat",
     ),
     DatasetSpec(
-        key="Prostate_GE_asu",
+        key="RELATHE_asu",
         group="large_highdim",
-        display_name="Prostate_GE",
+        display_name="RELATHE",
         source="ASU / scikit-feature",
-        expected_n_samples=102,
-        expected_n_features_raw=5966,
+        expected_n_samples=1427,
+        expected_n_features_raw=4322,
         expected_n_classes=2,
         loader="asu_mat",
-        asu_mat_name="Prostate-GE.mat",
+        asu_mat_name="RELATHE.mat",
+    ),
+    DatasetSpec(
+        key="GLIOMA_asu",
+        group="large_highdim",
+        display_name="GLIOMA",
+        source="ASU / scikit-feature",
+        expected_n_samples=50,
+        expected_n_features_raw=4434,
+        expected_n_classes=4,
+        loader="asu_mat",
+        asu_mat_name="GLIOMA.mat",
+    ),
+    DatasetSpec(
+        key="BASEHOCK_asu",
+        group="large_highdim",
+        display_name="BASEHOCK",
+        source="ASU / scikit-feature",
+        expected_n_samples=1993,
+        expected_n_features_raw=4862,
+        expected_n_classes=2,
+        loader="asu_mat",
+        asu_mat_name="BASEHOCK.mat",
     ),
     DatasetSpec(
         key="TOX_171_asu",
@@ -453,6 +491,17 @@ DATASET_SPECS: tuple[DatasetSpec, ...] = (
         expected_n_classes=4,
         loader="asu_mat",
         asu_mat_name="TOX-171.mat",
+    ),
+    DatasetSpec(
+        key="Prostate_GE_asu",
+        group="large_highdim",
+        display_name="Prostate_GE",
+        source="ASU / scikit-feature",
+        expected_n_samples=102,
+        expected_n_features_raw=5966,
+        expected_n_classes=2,
+        loader="asu_mat",
+        asu_mat_name="Prostate-GE.mat",
     ),
 )
 
@@ -588,12 +637,44 @@ def load_uci_sonar(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.S
     return X, y, str(path), []
 
 
-def load_uci_ionosphere(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
-    path = download_file(spec.urls[0], raw_dir / spec.key / "ionosphere.data")
-    df = pd.read_csv(path, header=None)
+def load_uci_qsar_biodeg(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
+    path = download_file(spec.urls[0], raw_dir / spec.key / "biodeg.csv")
+    # UCI QSAR biodegradation format: 41 descriptors separated by ';' and final class label (RB/NRB).
+    df = pd.read_csv(path, sep=";", header=None)
+    if df.shape[1] < 2:
+        raise ValueError(f"QSAR biodeg file should contain descriptor columns and a class column, got shape={df.shape}")
     y = df.iloc[:, -1]
     X = df.iloc[:, :-1].copy()
-    X.columns = _make_feature_names("ionosphere", X.shape[1])
+    X.columns = _make_feature_names("qsar", X.shape[1])
+    return X, y, str(path), []
+
+
+def load_uci_zoo(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
+    path = download_file(spec.urls[0], raw_dir / spec.key / "zoo.data")
+    df = pd.read_csv(path, header=None)
+    # UCI Zoo format: animal name, 16 attributes, class label.
+    y = df.iloc[:, -1]
+    X = df.iloc[:, 1:-1].copy()
+    X.columns = _make_feature_names("zoo", X.shape[1])
+    return X, y, str(path), ["animal_name"]
+
+
+def load_uci_wdbc(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
+    path = download_file(spec.urls[0], raw_dir / spec.key / "wdbc.data")
+    df = pd.read_csv(path, header=None)
+    # UCI WDBC format: sample ID, diagnosis, 30 numeric features.
+    y = df.iloc[:, 1]
+    X = df.iloc[:, 2:].copy()
+    X.columns = _make_feature_names("wdbc", X.shape[1])
+    return X, y, str(path), ["sample_id"]
+
+
+def load_uci_dermatology(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
+    path = download_file(spec.urls[0], raw_dir / spec.key / "dermatology.data")
+    df = pd.read_csv(path, header=None, na_values="?")
+    y = df.iloc[:, -1]
+    X = df.iloc[:, :-1].copy()
+    X.columns = _make_feature_names("derm", X.shape[1])
     return X, y, str(path), []
 
 
@@ -631,15 +712,6 @@ def load_uci_vehicle(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd
     X = df.iloc[:, :-1].copy()
     X.columns = _make_feature_names("vehicle", X.shape[1])
     return X, y, ";".join(paths), []
-
-
-def load_uci_hepatitis(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
-    path = download_file(spec.urls[0], raw_dir / spec.key / "hepatitis.data")
-    df = pd.read_csv(path, header=None, na_values="?")
-    y = df.iloc[:, 0]
-    X = df.iloc[:, 1:].copy()
-    X.columns = _make_feature_names("hepatitis", X.shape[1])
-    return X, y, str(path), []
 
 
 def load_uci_parkinsons(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series, str, list[str]]:
@@ -684,9 +756,26 @@ def load_openml_dataset(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame,
     else:
         raise ValueError(f"{spec.key} has neither OpenML data_id nor name")
     try:
-        bunch = fetch_openml(parser="auto", **kwargs)
-    except TypeError:
-        bunch = fetch_openml(**kwargs)
+        try:
+            bunch = fetch_openml(parser="auto", **kwargs)
+        except TypeError:
+            bunch = fetch_openml(**kwargs)
+    except Exception as first_exc:
+        # Some OpenML mirrors/API versions occasionally fail on a specific data_id even
+        # though the dataset can still be resolved by exact name.  Falling back to the
+        # name keeps dataset generation from failing on transient/deprecated id lookups.
+        if spec.openml_name is None or spec.openml_data_id is None:
+            raise
+        fallback_kwargs: dict[str, Any] = {"as_frame": True, "cache": True, "data_home": str(cache), "name": spec.openml_name}
+        if spec.openml_version is not None:
+            fallback_kwargs["version"] = int(spec.openml_version)
+        try:
+            try:
+                bunch = fetch_openml(parser="auto", **fallback_kwargs)
+            except TypeError:
+                bunch = fetch_openml(**fallback_kwargs)
+        except Exception:
+            raise first_exc
     X = bunch.data
     y = bunch.target
     if isinstance(y, pd.DataFrame):
@@ -745,11 +834,13 @@ def load_raw(spec: DatasetSpec, raw_dir: Path) -> tuple[pd.DataFrame, pd.Series,
     loaders: dict[str, Callable[[DatasetSpec, Path], tuple[pd.DataFrame, pd.Series, str, list[str]]]] = {
         "uci_lymphography": load_uci_lymphography,
         "uci_sonar": load_uci_sonar,
-        "uci_ionosphere": load_uci_ionosphere,
+        "uci_qsar_biodeg": load_uci_qsar_biodeg,
+        "uci_zoo": load_uci_zoo,
+        "uci_wdbc": load_uci_wdbc,
+        "uci_dermatology": load_uci_dermatology,
         "uci_heart": load_uci_heart,
         "uci_australian_credit": load_uci_australian_credit,
         "uci_vehicle": load_uci_vehicle,
-        "uci_hepatitis": load_uci_hepatitis,
         "uci_parkinsons": load_uci_parkinsons,
         "uci_splice": load_uci_splice,
         "openml": load_openml_dataset,
@@ -945,7 +1036,7 @@ def save_prepared(
         expected_n_features_raw=int(spec.expected_n_features_raw),
         expected_n_classes=int(spec.expected_n_classes),
         dtype=args.float_dtype,
-        preprocessing_version="fs-prep-v2-table-30datasets",
+        preprocessing_version="fs-prep-v3-table-34datasets",
         preprocessing_scope="global_unsupervised_fit_transform_for_current_blur_ga_matrix_interface",
         standardize_numeric=bool(args.standardize_numeric),
         numeric_columns=[str(c) for c in audit.get("numeric_columns", [])],
@@ -1129,7 +1220,18 @@ def write_manifests(out_root: Path, manifest_rows: list[dict[str, Any]], skipped
         for col in cols:
             if col not in manifest.columns:
                 manifest[col] = ""
-        manifest = manifest[cols + [c for c in manifest.columns if c not in cols]].sort_values(["group", "n_samples", "dataset_key"])
+        group_order = {group: i for i, group in enumerate(CANONICAL_GROUPS)}
+        manifest["_group_order"] = manifest["group"].map(group_order).fillna(999).astype(int)
+        manifest["_table_sort"] = np.where(
+            manifest["group"].isin(["small_tabular", "medium_tabular"]),
+            pd.to_numeric(manifest["n_samples"], errors="coerce"),
+            pd.to_numeric(manifest["n_features_raw_expected"], errors="coerce"),
+        )
+        manifest = (
+            manifest[cols + [c for c in manifest.columns if c not in cols]]
+            .sort_values(["_group_order", "_table_sort", "dataset_key"])
+            .drop(columns=["_group_order", "_table_sort"], errors="ignore")
+        )
     manifest.to_csv(out_root / "manifest.csv", index=False)
     pd.DataFrame(skipped_rows).to_csv(out_root / "skipped_datasets.csv", index=False)
     pd.DataFrame(missing_rows).to_csv(out_root / "missing_datasets.csv", index=False)

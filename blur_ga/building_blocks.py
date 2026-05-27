@@ -262,40 +262,207 @@ class LTGABuildingBlockExtractor:
         )
 
     def _internal_tree_nodes(self, weight: np.ndarray) -> list[tuple[int, ...]]:
+        """Return LTGA-style candidate masks without recursive tree traversal.
+
+        This implementation is safe for high-dimensional feature-selection data.
+        It avoids recursive scipy tree traversal, builds trees only inside active
+        connected components of the learned linkage graph, and falls back to
+        top-edge neighbourhood masks when a component is too large for dense
+        hierarchical clustering.
+        """
         n = int(weight.shape[0])
         if n < 2:
             return []
-        max_w = float(np.max(weight))
-        if max_w <= _EPS:
+        wmat = np.asarray(weight, dtype=float)
+        if wmat.shape[0] != wmat.shape[1]:
             return []
-        similarity = np.clip(weight / max_w, 0.0, 1.0)
-        dist = 1.0 - similarity
-        np.fill_diagonal(dist, 0.0)
-        condensed = squareform(dist, checks=False)
-        if condensed.size == 0:
+
+        # Extract active undirected edges.  This creates only a boolean mask plus
+        # edge-index vectors and avoids copying the full float matrix.
+        active_upper = np.triu(wmat > _EPS, k=1)
+        edge_i, edge_j = np.nonzero(active_upper)
+        if edge_i.size == 0:
             return []
-        Z = linkage(condensed, method="average", optimal_ordering=True)
-        root = to_tree(Z, rd=False)
+
+        components = self._active_components_from_edges(n, edge_i, edge_j)
+        if not components:
+            return []
+
+        max_hclust_component_size = 1500
         out: list[tuple[int, ...]] = []
+        for component in components:
+            m = int(component.size)
+            if m < 2:
+                continue
+            if m == 2:
+                out.append(tuple(sorted(int(v) for v in component)))
+                continue
+            if m > max_hclust_component_size:
+                out.extend(self._large_component_candidates_from_edges(wmat, component, edge_i, edge_j))
+                continue
 
-        def visit(node: object) -> tuple[int, ...]:
-            if node.is_leaf():
-                return (int(node.id),)
-            left = visit(node.left)
-            right = visit(node.right)
-            items = tuple(sorted(left + right))
-            if 1 < len(items) < n:
-                out.append(items)
-            return items
+            local_weight = np.asarray(wmat[np.ix_(component, component)], dtype=float)
+            local_weight = np.nan_to_num(local_weight, nan=0.0, posinf=0.0, neginf=0.0)
+            local_weight = np.maximum(local_weight, local_weight.T)
+            np.fill_diagonal(local_weight, 0.0)
+            max_w = float(np.max(local_weight))
+            if max_w <= _EPS:
+                continue
+            similarity = np.clip(local_weight / max_w, 0.0, 1.0)
+            dist = 1.0 - similarity
+            np.fill_diagonal(dist, 0.0)
+            condensed = squareform(dist, checks=False)
+            if condensed.size == 0:
+                continue
+            optimal_ordering = bool(m <= 512)
+            Z = linkage(condensed, method="average", optimal_ordering=optimal_ordering)
+            root = to_tree(Z, rd=False)
+            out.extend(self._iter_tree_items(root, component))
 
-        visit(root)
         seen: set[tuple[int, ...]] = set()
         unique: list[tuple[int, ...]] = []
         for item in out:
-            if item not in seen:
-                seen.add(item)
-                unique.append(item)
+            if len(item) < 2:
+                continue
+            key = tuple(sorted(set(int(v) for v in item)))
+            if len(key) < 2 or key in seen:
+                continue
+            seen.add(key)
+            unique.append(key)
         return unique
+
+    @staticmethod
+    def _active_components_from_edges(n: int, edge_i: np.ndarray, edge_j: np.ndarray) -> list[np.ndarray]:
+        """Connected components from active undirected edge vectors."""
+        adjacency: list[list[int]] = [[] for _ in range(int(n))]
+        for a_raw, b_raw in zip(edge_i, edge_j):
+            a = int(a_raw)
+            b = int(b_raw)
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+        visited = np.zeros(int(n), dtype=bool)
+        components: list[np.ndarray] = []
+        starts = [i for i, nbrs in enumerate(adjacency) if nbrs]
+        for start in starts:
+            if visited[start]:
+                continue
+            stack = [start]
+            visited[start] = True
+            comp: list[int] = []
+            while stack:
+                u = stack.pop()
+                comp.append(u)
+                for v in adjacency[u]:
+                    if not visited[v]:
+                        visited[v] = True
+                        stack.append(v)
+            if len(comp) >= 2:
+                components.append(np.asarray(sorted(comp), dtype=int))
+        components.sort(key=lambda c: (int(c.size), int(c[0])))
+        return components
+
+    @staticmethod
+    def _iter_tree_items(root: object, component: np.ndarray) -> list[tuple[int, ...]]:
+        """Iteratively collect internal-node feature sets from a scipy tree."""
+        out: list[tuple[int, ...]] = []
+        leaves_by_node_id: dict[int, tuple[int, ...]] = {}
+        stack: list[tuple[object, bool]] = [(root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            node_id = int(node.id)
+            if node.is_leaf():
+                leaves_by_node_id[node_id] = (int(component[node_id]),)
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.right, False))
+                stack.append((node.left, False))
+                continue
+            left = leaves_by_node_id.pop(int(node.left.id))
+            right = leaves_by_node_id.pop(int(node.right.id))
+            items = tuple(sorted(left + right))
+            leaves_by_node_id[node_id] = items
+            if len(items) >= 2:
+                out.append(items)
+        return out
+
+    def _large_component_candidates_from_edges(
+        self,
+        weight: np.ndarray,
+        component: np.ndarray,
+        edge_i: np.ndarray,
+        edge_j: np.ndarray,
+    ) -> list[tuple[int, ...]]:
+        """Safe deterministic fallback for unexpectedly dense large components.
+
+        The method works from active edge vectors, not from a full component
+        distance matrix.  It ranks only a bounded number of strongest edges and
+        builds compact neighbourhood candidates around them.
+        """
+        comp = np.asarray(component, dtype=int)
+        comp_mask = np.zeros(int(weight.shape[0]), dtype=bool)
+        comp_mask[comp] = True
+        in_comp = comp_mask[edge_i] & comp_mask[edge_j]
+        if not np.any(in_comp):
+            return []
+        rows = edge_i[in_comp].astype(int, copy=False)
+        cols = edge_j[in_comp].astype(int, copy=False)
+        vals = np.asarray(weight[rows, cols], dtype=float)
+        valid = np.isfinite(vals) & (vals > _EPS)
+        if not np.any(valid):
+            return []
+        rows = rows[valid]
+        cols = cols[valid]
+        vals = vals[valid]
+
+        edge_budget = max(100, 10 * int(self.config.max_blocks))
+        edge_budget = min(edge_budget, int(vals.size))
+        if vals.size > edge_budget:
+            top_idx = np.argpartition(vals, -edge_budget)[-edge_budget:]
+            top_idx = top_idx[np.argsort(vals[top_idx])[::-1]]
+        else:
+            top_idx = np.argsort(vals)[::-1]
+
+        max_size = self.config.max_block_size or min(64, int(comp.size))
+        max_size = max(self.config.min_block_size, min(int(max_size), int(comp.size)))
+
+        # Build adjacency weights for only the strongest candidate edges.  This
+        # keeps the fallback linear in the retained edge budget.
+        nbrs: dict[int, list[tuple[float, int]]] = {}
+        for idx_raw in top_idx:
+            idx = int(idx_raw)
+            u = int(rows[idx])
+            v = int(cols[idx])
+            val = float(vals[idx])
+            nbrs.setdefault(u, []).append((val, v))
+            nbrs.setdefault(v, []).append((val, u))
+        for values in nbrs.values():
+            values.sort(key=lambda item: (-item[0], item[1]))
+
+        out: list[tuple[int, ...]] = []
+        seen: set[tuple[int, ...]] = set()
+        for idx_raw in top_idx:
+            idx = int(idx_raw)
+            u = int(rows[idx])
+            v = int(cols[idx])
+            pair = tuple(sorted((u, v)))
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+
+            block = [u, v]
+            # Alternate strong neighbours around the two endpoints.
+            for _, nb in (nbrs.get(u, []) + nbrs.get(v, [])):
+                if nb not in block:
+                    block.append(int(nb))
+                if len(block) >= max_size:
+                    break
+            if len(block) >= self.config.min_block_size:
+                key = tuple(sorted(block))
+                if key not in seen:
+                    seen.add(key)
+                    out.append(key)
+        return out
 
     def _score_block(self, features: tuple[int, ...], weight: np.ndarray, signed: np.ndarray, *, generation: int) -> BuildingBlock:
         idx = np.asarray(features, dtype=int)

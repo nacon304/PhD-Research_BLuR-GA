@@ -61,7 +61,7 @@ class GAConfig:
     cache_fitness: bool = True
 
     # Regression-linkage learner settings for ga_type 2/3.
-    # ga_type 2: theory-aligned pairwise Lasso using bipolar pairwise terms.
+    # ga_type 2: theory-aligned pairwise Lasso using binary active-pair terms.
     # ga_type 3: theory-aligned partial Main+Pairwise Lasso with unpenalized main controls.
     lr_gap_gen: int = 5
     lr_min_samples: int = 20
@@ -82,6 +82,12 @@ class GAConfig:
     lr_stability_fraction: float = 0.75
     lr_edge_min_weight: float = 0.0
     lr_edge_top_k: int | None = None
+    lr_solver: Literal["auto", "sklearn_full", "matrix_free"] = "auto"
+    lr_matrix_free_threshold: int = 700
+    lr_matrix_free_max_iter: int = 32
+    lr_matrix_free_tol: float = 1e-4
+    lr_matrix_free_step_scale: float = 0.5
+    lr_matrix_free_dtype: Literal["float64", "float32"] = "float32"
 
     # Optional LTGA-style building-block extraction from the current linkage graph.
     # When bb_search_mode is "none", blocks are diagnostic only.  The two active
@@ -151,6 +157,18 @@ class GAConfig:
             raise ValueError("lr_edge_min_weight must be non-negative.")
         if self.lr_edge_top_k is not None and self.lr_edge_top_k < 1:
             raise ValueError("lr_edge_top_k must be positive or None.")
+        if self.lr_solver not in {"auto", "sklearn_full", "matrix_free"}:
+            raise ValueError("lr_solver must be one of: auto, sklearn_full, matrix_free.")
+        if self.lr_matrix_free_threshold < 1:
+            raise ValueError("lr_matrix_free_threshold must be at least 1.")
+        if self.lr_matrix_free_max_iter < 1:
+            raise ValueError("lr_matrix_free_max_iter must be at least 1.")
+        if self.lr_matrix_free_tol < 0:
+            raise ValueError("lr_matrix_free_tol must be non-negative.")
+        if self.lr_matrix_free_step_scale <= 0:
+            raise ValueError("lr_matrix_free_step_scale must be positive.")
+        if self.lr_matrix_free_dtype not in {"float64", "float32"}:
+            raise ValueError("lr_matrix_free_dtype must be float64 or float32.")
         if self.bb_weight_mode not in {"absolute", "signed", "positive"}:
             raise ValueError("bb_weight_mode must be one of: absolute, signed, positive.")
         if self.bb_search_mode not in {"none", "uniform", "pattern_refine"}:

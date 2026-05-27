@@ -19,7 +19,7 @@ class FitnessEvaluator:
     scorer: KNNScorer = field(init=False)
     n_features: int = field(init=False)
     eval_count: int = 0
-    cache: dict[tuple[int, ...], float] = field(default_factory=dict)
+    cache: dict[bytes, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.splits:
@@ -32,10 +32,11 @@ class FitnessEvaluator:
         return np.flatnonzero(arr == 1).astype(int)
 
     def evaluate(self, chromosome: Iterable[int]) -> float:
-        key = tuple(int(g) for g in chromosome)
+        arr = np.asarray(list(chromosome), dtype=np.int8)
+        key = np.packbits(arr, bitorder="little").tobytes()
         if self.config.cache_fitness and key in self.cache:
             return self.cache[key]
-        selected = np.flatnonzero(np.asarray(key, dtype=np.int8) == 1).astype(int)
+        selected = np.flatnonzero(arr == 1).astype(int)
         if selected.size == 0:
             fitness = 0.0
         else:

@@ -124,9 +124,23 @@ class ResultWriter:
 
         for target_dir in graph_dirs:
             root_level = target_dir == self.output_dir
-            row.run_result.evig.save_matrix(target_dir / self._artifact_name("eVIG", row, root_level=root_level))
-            if hasattr(row.run_result.evig, "save_coefficient_matrix"):
-                row.run_result.evig.save_coefficient_matrix(target_dir / self._artifact_name("eVIG_coefficients", row, root_level=root_level))
+            # Dense d x d CSV matrices become very large for high-dimensional FS
+            # datasets (e.g. 5966^2 text entries).  The edge CSVs below contain
+            # the same active linkage information used by downstream graph/BB
+            # analysis, so skip dense matrix dumps when d is large.
+            n_features = int(getattr(row.run_result.evig, "n_features", 0))
+            if n_features <= 500:
+                row.run_result.evig.save_matrix(target_dir / self._artifact_name("eVIG", row, root_level=root_level))
+                if hasattr(row.run_result.evig, "save_coefficient_matrix"):
+                    row.run_result.evig.save_coefficient_matrix(target_dir / self._artifact_name("eVIG_coefficients", row, root_level=root_level))
+            else:
+                marker = target_dir / self._artifact_name("eVIG_matrix_skipped", row, root_level=root_level).replace(".csv", ".txt")
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(
+                    f"Dense eVIG/eVIG_coefficients matrices were skipped for n_features={n_features}. "
+                    "Use eVIG_edges.csv and eVIG_tested_pairs.csv for the active sparse graph.\n",
+                    encoding="utf-8",
+                )
             row.run_result.evig.save_edges(target_dir / self._artifact_name("eVIG_edges", row, root_level=root_level))
             row.run_result.evig.save_tested_pairs(target_dir / self._artifact_name("eVIG_tested_pairs", row, root_level=root_level))
 

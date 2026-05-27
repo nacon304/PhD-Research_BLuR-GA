@@ -29,7 +29,7 @@ Example, full evaluation root:
 
 Example, one dataset folder:
     python scripts/summarize_method_outputs.py `
-        --input ../Results/results_analysis_small/vehicle_uci `
+        --input "../Results/results_analysis_small/vehicle_uci (1)" `
         --mode dataset `
         --baseline-method standard_ga
 

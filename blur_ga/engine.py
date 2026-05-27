@@ -113,7 +113,7 @@ class GeneticFeatureSelector:
                 )
             )
         self._current_generation = 0
-        self._archive_seen: set[tuple[int, ...]] = set()
+        self._archive_seen: set[bytes] = set()
         self._archive_chromosomes: list[np.ndarray] = []
         self._archive_fitness: list[float] = []
         self._archive_generations: list[int] = []
@@ -135,6 +135,12 @@ class GeneticFeatureSelector:
                 stability_subsamples=config.lr_stability_subsamples,
                 stability_fraction=config.lr_stability_fraction,
                 random_state=self.seed,
+                solver=config.lr_solver,
+                matrix_free_threshold=config.lr_matrix_free_threshold,
+                matrix_free_max_iter=config.lr_matrix_free_max_iter,
+                matrix_free_tol=config.lr_matrix_free_tol,
+                matrix_free_step_scale=config.lr_matrix_free_step_scale,
+                matrix_free_dtype=config.lr_matrix_free_dtype,
             )
 
     def run(self) -> RunResult:
@@ -242,7 +248,7 @@ class GeneticFeatureSelector:
     def _evaluate(self, chrom: np.ndarray) -> float:
         arr = np.asarray(chrom, dtype=np.int8)
         fitness = float(self.evaluator.evaluate(arr))
-        key = tuple(int(v) for v in arr)
+        key = np.packbits(arr, bitorder="little").tobytes()
         if key not in self._archive_seen:
             self._archive_seen.add(key)
             self._archive_chromosomes.append(arr.copy())
@@ -340,7 +346,7 @@ class GeneticFeatureSelector:
         best_so_far = self.best_so_far if self.best_so_far is not None else best_population
         best_pop_chrom = best_population.chromosome.astype(int, copy=False)
         best_so_far_chrom = best_so_far.chromosome.astype(int, copy=False)
-        unique_population = len({tuple(int(v) for v in ind.chromosome) for ind in self.population})
+        unique_population = len({np.packbits(ind.chromosome.astype(np.int8, copy=False), bitorder="little").tobytes() for ind in self.population})
 
         return {
             "generation": int(generation),

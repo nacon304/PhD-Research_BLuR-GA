@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
+    parser.add_argument("--lr-solver", choices=["auto", "sklearn_full", "matrix_free"], default="auto", help="LR solver: auto uses dense sklearn for d<threshold and matrix-free for d>=threshold")
+    parser.add_argument("--lr-matrix-free-threshold", type=int, default=500, help="Feature-count cutoff for auto matrix-free LR fallback; d >= threshold uses matrix-free")
+    parser.add_argument("--lr-matrix-free-max-iter", type=int, default=32, help="Matrix-free proximal iterations per LR fit")
+    parser.add_argument("--lr-matrix-free-tol", type=float, default=1e-4, help="Matrix-free stopping tolerance")
+    parser.add_argument("--lr-matrix-free-step-scale", type=float, default=0.5, help="Multiplier for matrix-free proximal step size")
+    parser.add_argument("--lr-matrix-free-dtype", choices=["float64", "float32"], default="float32", help="Numerical dtype for matrix-free LR matrices")
 
     # LTGA building-block diagnostics/search for ga_type 1/2/3.  Search modes are active for ga_type 2/3.
     parser.add_argument("--build-building-blocks", type=str2bool, default=False, help="Extract LTGA building blocks from the current linkage graph during the run")
@@ -140,6 +146,12 @@ def main(argv: list[str] | None = None) -> None:
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
+        lr_solver=args.lr_solver,
+        lr_matrix_free_threshold=args.lr_matrix_free_threshold,
+        lr_matrix_free_max_iter=args.lr_matrix_free_max_iter,
+        lr_matrix_free_tol=args.lr_matrix_free_tol,
+        lr_matrix_free_step_scale=args.lr_matrix_free_step_scale,
+        lr_matrix_free_dtype=args.lr_matrix_free_dtype,
         build_building_blocks=args.build_building_blocks,
         bb_weight_mode=args.bb_weight_mode,
         bb_search_mode=args.bb_search_mode,
@@ -175,7 +187,8 @@ def main(argv: list[str] | None = None) -> None:
         print(
             f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
             f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
-            f"delta={ga_cfg.lr_delta}, edge_top_k={ga_cfg.lr_edge_top_k}"
+            f"delta={ga_cfg.lr_delta}, edge_top_k={ga_cfg.lr_edge_top_k}, "
+            f"solver={ga_cfg.lr_solver}, mf_threshold={ga_cfg.lr_matrix_free_threshold}"
         )
     if ga_cfg.build_building_blocks and ga_cfg.ga_type != 0:
         print(

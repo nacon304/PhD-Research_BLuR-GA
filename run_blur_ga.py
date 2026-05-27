@@ -236,6 +236,12 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_stability_fraction": 0.75,
         "lr_edge_min_weight": 0.0,
         "lr_edge_top_k": None,
+        "lr_solver": "auto",
+        "lr_matrix_free_threshold": 500,
+        "lr_matrix_free_max_iter": 32,
+        "lr_matrix_free_tol": 1e-4,
+        "lr_matrix_free_step_scale": 0.5,
+        "lr_matrix_free_dtype": "float32",
         "artifact_layout": "root",
         "write_aggregate_outputs": True,
         "build_building_blocks": False,
@@ -327,6 +333,12 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
+        "--lr-solver", str(args.lr_solver),
+        "--lr-matrix-free-threshold", str(args.lr_matrix_free_threshold),
+        "--lr-matrix-free-max-iter", str(args.lr_matrix_free_max_iter),
+        "--lr-matrix-free-tol", str(args.lr_matrix_free_tol),
+        "--lr-matrix-free-step-scale", str(args.lr_matrix_free_step_scale),
+        "--lr-matrix-free-dtype", str(args.lr_matrix_free_dtype),
         "--build-building-blocks", str(build_building_blocks).lower(),
         "--bb-weight-mode", str(args.bb_weight_mode),
         "--bb-search-mode", bb_search_mode,
@@ -423,6 +435,12 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-stability-fraction", type=float, default=None)
     p.add_argument("--lr-edge-min-weight", type=float, default=None)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
+    p.add_argument("--lr-solver", choices=["auto", "sklearn_full", "matrix_free"], default=None)
+    p.add_argument("--lr-matrix-free-threshold", type=int, default=None)
+    p.add_argument("--lr-matrix-free-max-iter", type=int, default=None)
+    p.add_argument("--lr-matrix-free-tol", type=float, default=None)
+    p.add_argument("--lr-matrix-free-step-scale", type=float, default=None)
+    p.add_argument("--lr-matrix-free-dtype", choices=["float64", "float32"], default=None)
     p.add_argument("--build-building-blocks", type=str2bool, default=None)
     p.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default=None)
     p.add_argument("--bb-search-mode", choices=["none", "uniform", "pattern_refine"], default=None)
@@ -740,17 +758,17 @@ if __name__ == "__main__":
 python run_blur_ga.py batch `
   --preset analysis `
   --data-dir ../Dataset/prepared_feature_selection `
-  --output-root ../Results/results_analysis_med_high `
+  --output-root ../Results/results_analysis_med_high_2 `
   --dataset-group medium_highdim `
   --classifiers 2 `
-  --ga-types 0 1 2 3 `
+  --ga-types 2 3 `
   --repeat 1 `
   --inner-folds 4 `
   --outer-folds 4 `
   --bb-pattern-top-fraction 0.20 `
   --build-building-blocks true `
   --bb-weight-mode positive `
-  --bb-search-mode pattern_refine `
+  --bb-search-mode uniform `
   --bb-gawll-update-interval 10 `
   --save-generation-trace true `
   --save-graph-snapshots false `
@@ -761,17 +779,17 @@ python run_blur_ga.py batch `
 python run_blur_ga.py batch `
   --preset analysis `
   --data-dir ../Dataset/prepared_feature_selection `
-  --output-root ../Results/results_analysis_med_high_2 `
-  --dataset-group medium_highdim `
+  --output-root ../Results/results_analysis_small_2 `
+  --dataset-group small_tabular `
   --classifiers 2 `
-  --ga-types 1 2 3 `
+  --ga-types 2 3 `
   --repeat 1 `
   --inner-folds 4 `
   --outer-folds 4 `
   --bb-pattern-top-fraction 0.20 `
   --build-building-blocks true `
   --bb-weight-mode positive `
-  --bb-search-mode uniform `
+  --bb-search-mode pattern_refine `
   --bb-gawll-update-interval 10 `
   --save-generation-trace true `
   --save-graph-snapshots false `
