@@ -106,18 +106,33 @@ METHOD_FOLDER_NAMES: dict[int, str] = {
 }
 
 
-def method_folder_name(ga_type: int, *, bb_search_mode: str = "none", bb_weight_mode: str = "absolute") -> str:
+def method_folder_name(
+    ga_type: int,
+    *,
+    bb_search_mode: str = "none",
+    bb_weight_mode: str = "absolute",
+    lr_encoding: str = "binary",
+    pre_lr_explore: bool | str | None = None,
+) -> str:
     """Human-readable method folder used under --output-root.
 
     File names keep the compact _a<ga_type> suffix, while directories use
     descriptive method labels.  When a BB-search operator is active, the folder
     name is suffixed so uniform and pattern_refine runs do not overwrite each
-    other even if they share the same ga_type.
+    other even if they share the same ga_type.  For regression-linkage methods,
+    the LR encoding and pre-LR exploration flag are also included so binary/spin
+    and pre/no-pre ablations cannot overwrite each other.
     """
     base = METHOD_FOLDER_NAMES.get(int(ga_type), f"method_{int(ga_type)}")
     mode = str(bb_search_mode or "none").strip().lower()
-    if int(ga_type) in {2, 3} and mode != "none":
-        return f"{base}_{mode}_{str(bb_weight_mode).strip().lower()}"
+    if int(ga_type) in {1, 2, 3} and mode != "none":
+        suffix = f"{mode}_{str(bb_weight_mode).strip().lower()}"
+        if int(ga_type) in {2, 3}:
+            suffix = f"{suffix}_{str(lr_encoding).strip().lower()}"
+            if pre_lr_explore is not None:
+                pre_bool = str(pre_lr_explore).strip().lower() in {"1", "true", "yes", "y"}
+                suffix = f"{suffix}_{'pre' if pre_bool else 'nopre'}"
+        return f"{base}_{suffix}"
     return base
 
 
@@ -237,8 +252,9 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_edge_min_weight": 0.0,
         "lr_edge_top_k": None,
         "lr_solver": "auto",
-        "lr_matrix_free_threshold": 500,
-        "lr_matrix_free_max_iter": 32,
+        "lr_encoding": "binary",
+        "lr_matrix_free_threshold": 700,
+        "lr_matrix_free_max_iter": 8,
         "lr_matrix_free_tol": 1e-4,
         "lr_matrix_free_step_scale": 0.5,
         "lr_matrix_free_dtype": "float32",
@@ -261,6 +277,9 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "bb_accept_equal_sparser": True,
         "bb_shuffle_blocks": True,
         "bb_signed_repair_probability": 0.75,
+        "pre_lr_explore": False,
+        "pre_lr_mutation_multiplier": 3.0,
+        "pre_lr_immigrant_rate": 0.0,
     }
     for key, value in defaults.items():
         if hasattr(args, key) and getattr(args, key) is None:
@@ -278,6 +297,8 @@ def build_jobs(args: argparse.Namespace, *, split_folds: bool) -> list[Job]:
                     int(ga_type),
                     bb_search_mode=str(getattr(args, "bb_search_mode", "none")),
                     bb_weight_mode=str(getattr(args, "bb_weight_mode", "absolute")),
+                    lr_encoding=str(getattr(args, "lr_encoding", "binary")),
+                    pre_lr_explore=getattr(args, "pre_lr_explore", None),
                 )
                 if split_folds:
                     for rep in range(args.repeats):
@@ -333,6 +354,7 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-stability-subsamples", str(args.lr_stability_subsamples),
         "--lr-stability-fraction", str(args.lr_stability_fraction),
         "--lr-edge-min-weight", str(args.lr_edge_min_weight),
+        "--lr-encoding", str(args.lr_encoding),
         "--lr-solver", str(args.lr_solver),
         "--lr-matrix-free-threshold", str(args.lr_matrix_free_threshold),
         "--lr-matrix-free-max-iter", str(args.lr_matrix_free_max_iter),
@@ -353,6 +375,9 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--bb-accept-equal-sparser", str(bool(args.bb_accept_equal_sparser)).lower(),
         "--bb-shuffle-blocks", str(bool(args.bb_shuffle_blocks)).lower(),
         "--bb-signed-repair-probability", str(args.bb_signed_repair_probability),
+        "--pre-lr-explore", str(bool(args.pre_lr_explore)).lower(),
+        "--pre-lr-mutation-multiplier", str(args.pre_lr_mutation_multiplier),
+        "--pre-lr-immigrant-rate", str(args.pre_lr_immigrant_rate),
         "--artifact-layout", str(args.artifact_layout),
         "--write-aggregate-outputs", str(bool(args.write_aggregate_outputs)).lower(),
     ]
@@ -435,7 +460,8 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-stability-fraction", type=float, default=None)
     p.add_argument("--lr-edge-min-weight", type=float, default=None)
     p.add_argument("--lr-edge-top-k", type=int, default=None)
-    p.add_argument("--lr-solver", choices=["auto", "sklearn_full", "matrix_free"], default=None)
+    p.add_argument("--lr-encoding", choices=["binary", "spin"], default=None)
+    p.add_argument("--lr-solver", choices=["auto", "sklearn_full", "dual_ridge", "matrix_free"], default=None)
     p.add_argument("--lr-matrix-free-threshold", type=int, default=None)
     p.add_argument("--lr-matrix-free-max-iter", type=int, default=None)
     p.add_argument("--lr-matrix-free-tol", type=float, default=None)
@@ -458,6 +484,9 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bb-accept-equal-sparser", type=str2bool, default=None)
     p.add_argument("--bb-shuffle-blocks", type=str2bool, default=None)
     p.add_argument("--bb-signed-repair-probability", type=float, default=None)
+    p.add_argument("--pre-lr-explore", type=str2bool, default=None)
+    p.add_argument("--pre-lr-mutation-multiplier", type=float, default=None)
+    p.add_argument("--pre-lr-immigrant-rate", type=float, default=None)
     p.add_argument("--artifact-layout", choices=["both", "nested", "root"], default=None)
     p.add_argument("--write-aggregate-outputs", type=str2bool, default=None)
 
@@ -759,17 +788,21 @@ python run_blur_ga.py batch `
   --preset analysis `
   --data-dir ../Dataset/prepared_feature_selection `
   --output-root ../Results/results_analysis_small_tab_5 `
-  --dataset-group small_tabular `
   --classifiers 2 `
-  --ga-types 2 3 `
+  --ga-types 2 `
   --repeat 4 `
   --inner-folds 4 `
   --outer-folds 4 `
   --bb-pattern-top-fraction 0.20 `
   --build-building-blocks true `
-  --bb-weight-mode signed `
+  --bb-weight-mode positive `
   --bb-search-mode uniform `
-  --bb-gawll-update-interval 20 `
+  --bb-gawll-update-interval 10 `
+  --pre-lr-explore true `
+  --pre-lr-mutation-multiplier 3.0 `
+  --pre-lr-immigrant-rate 0.10 `
+  --lr-expected-edges 60 `
+  --lr-refit-expected-edges 30 `
   --save-generation-trace true `
   --save-graph-snapshots false `
   --save-linkage-events false `

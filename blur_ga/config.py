@@ -10,6 +10,7 @@ from .bb_search import BBSearchMode
 ProblemType = Literal["classification", "regression"]
 StopCriterion = Literal["gen", "time", "eval"]
 ArtifactLayout = Literal["both", "nested", "root"]
+LREncoding = Literal["binary", "spin"]
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,11 @@ class GAConfig:
     lr_stability_fraction: float = 0.75
     lr_edge_min_weight: float = 0.0
     lr_edge_top_k: int | None = None
-    lr_solver: Literal["auto", "sklearn_full", "matrix_free"] = "auto"
+    # binary: pair term x_i*x_j, positive edge = co-selection effect.
+    # spin: pair term u_i*u_j where u=2x-1, positive edge = same-state effect.
+    lr_encoding: LREncoding = "binary"
+    # matrix_free is kept as a backward-compatible alias for the exact dual_ridge solver.
+    lr_solver: Literal["auto", "sklearn_full", "dual_ridge", "matrix_free"] = "auto"
     lr_matrix_free_threshold: int = 700
     lr_matrix_free_max_iter: int = 32
     lr_matrix_free_tol: float = 1e-4
@@ -109,6 +114,15 @@ class GAConfig:
     bb_accept_equal_sparser: bool = True
     bb_shuffle_blocks: bool = True
     bb_signed_repair_probability: float = 0.75
+
+    # Optional exploration boost before the first regression-linkage fit.
+    # This keeps early generations more diverse while lr_expected_edges/auto
+    # min-samples has not yet allowed the first LR graph to be learned. Once
+    # the first LR fit succeeds, the optimizer automatically returns to the
+    # normal mutation and replacement behavior.
+    pre_lr_explore: bool = False
+    pre_lr_mutation_multiplier: float = 3.0
+    pre_lr_immigrant_rate: float = 0.0
 
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
@@ -157,8 +171,10 @@ class GAConfig:
             raise ValueError("lr_edge_min_weight must be non-negative.")
         if self.lr_edge_top_k is not None and self.lr_edge_top_k < 1:
             raise ValueError("lr_edge_top_k must be positive or None.")
-        if self.lr_solver not in {"auto", "sklearn_full", "matrix_free"}:
-            raise ValueError("lr_solver must be one of: auto, sklearn_full, matrix_free.")
+        if self.lr_encoding not in {"binary", "spin"}:
+            raise ValueError("lr_encoding must be one of: binary, spin.")
+        if self.lr_solver not in {"auto", "sklearn_full", "dual_ridge", "matrix_free"}:
+            raise ValueError("lr_solver must be one of: auto, sklearn_full, dual_ridge, matrix_free.")
         if self.lr_matrix_free_threshold < 1:
             raise ValueError("lr_matrix_free_threshold must be at least 1.")
         if self.lr_matrix_free_max_iter < 1:
@@ -199,6 +215,10 @@ class GAConfig:
             raise ValueError("bb_max_refine_trials must be None or positive.")
         if not 0.0 <= self.bb_signed_repair_probability <= 1.0:
             raise ValueError("bb_signed_repair_probability must be in [0, 1].")
+        if self.pre_lr_mutation_multiplier < 1.0:
+            raise ValueError("pre_lr_mutation_multiplier must be at least 1.0.")
+        if not 0.0 <= self.pre_lr_immigrant_rate <= 1.0:
+            raise ValueError("pre_lr_immigrant_rate must be in [0, 1].")
 
     @property
     def _regression_stage_for_validation(self) -> str | None:

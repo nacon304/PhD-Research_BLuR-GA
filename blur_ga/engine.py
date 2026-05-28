@@ -136,6 +136,8 @@ class GeneticFeatureSelector:
                 stability_fraction=config.lr_stability_fraction,
                 random_state=self.seed,
                 solver=config.lr_solver,
+                encoding=config.lr_encoding,
+                edge_top_k=config.lr_edge_top_k,
                 matrix_free_threshold=config.lr_matrix_free_threshold,
                 matrix_free_max_iter=config.lr_matrix_free_max_iter,
                 matrix_free_tol=config.lr_matrix_free_tol,
@@ -366,6 +368,9 @@ class GeneticFeatureSelector:
             "n_tested_pairs": int(evig.n_tested_pairs if evig is not None else 0),
             "eval_count": int(self.evaluator.eval_count),
             "archive_size": int(len(self._archive_chromosomes)),
+            "pre_lr_explore_active": int(self._in_pre_lr_exploration_phase()),
+            "effective_mutation_probability": float(self._effective_mutation_probability()),
+            "lr_first_fit_done": int(self._last_lr_archive_size > 0),
             "bb_n_blocks": int(self._latest_building_block_snapshot.n_blocks) if self._latest_building_block_snapshot else 0,
             "bb_n_candidates": int(self._latest_building_block_snapshot.n_candidates) if self._latest_building_block_snapshot else 0,
             "bb_max_score": float(self._latest_building_block_snapshot.max_score) if self._latest_building_block_snapshot else 0.0,
@@ -558,13 +563,57 @@ class GeneticFeatureSelector:
         child2 = np.where(mask, p1, p2).astype(np.int8)
         return child1, child2
 
+    def _in_pre_lr_exploration_phase(self) -> bool:
+        """Return True before the first regression-linkage graph is fitted.
+
+        This phase is only meaningful for ga_type 2/3.  It starts after the
+        initial population is evaluated and ends immediately after the first
+        successful LR fit updates ``_last_lr_archive_size``.
+        """
+        return bool(
+            self.config.pre_lr_explore
+            and self._regression_stage is not None
+            and self._last_lr_archive_size <= 0
+        )
+
+    def _effective_mutation_probability(self) -> float:
+        p = float(self.mutation_probability)
+        if self._in_pre_lr_exploration_phase():
+            p *= float(self.config.pre_lr_mutation_multiplier)
+        return min(1.0, max(0.0, p))
+
+    def _random_chromosome(self) -> np.ndarray:
+        chrom = self.rng.integers(0, 2, size=self.n_features, dtype=np.int8)
+        if not np.any(chrom):
+            chrom[self.rng.integers(0, self.n_features)] = 1
+        return chrom
+
     def _mutate(self, chrom: np.ndarray) -> np.ndarray:
-        flips = self.rng.random(self.n_features) < self.mutation_probability
+        flips = self.rng.random(self.n_features) < self._effective_mutation_probability()
         out = chrom.copy()
         out[flips] = 1 - out[flips]
         if not np.any(out):
             out[self.rng.integers(0, self.n_features)] = 1
         return out
+
+    def _apply_pre_lr_immigrants(self, new_pop: list[Individual]) -> list[Individual]:
+        """Inject random individuals only during the pre-first-LR exploration phase."""
+        if not self._in_pre_lr_exploration_phase() or self.config.pre_lr_immigrant_rate <= 0.0:
+            return new_pop[: self.config.popsize]
+        if len(new_pop) <= 1:
+            return new_pop[: self.config.popsize]
+        n_immigrants = int(round(float(self.config.pre_lr_immigrant_rate) * self.config.popsize))
+        n_immigrants = max(0, min(n_immigrants, len(new_pop) - 1))
+        if n_immigrants <= 0:
+            return new_pop[: self.config.popsize]
+
+        # Preserve the current best individual and replace the worst tail with
+        # diverse random masks.  Sorting only happens inside this temporary list
+        # and does not affect selection dynamics before replacement.
+        out = sorted(new_pop[: self.config.popsize], key=lambda ind: ind.fitness, reverse=True)
+        for pos in range(len(out) - n_immigrants, len(out)):
+            out[pos] = self._make_individual(self._random_chromosome())
+        return out[: self.config.popsize]
 
     def _make_individual(self, chrom: np.ndarray) -> Individual:
         return Individual(chrom.astype(np.int8, copy=False), self._evaluate(chrom))
@@ -584,7 +633,7 @@ class GeneticFeatureSelector:
                 new_pop.append(self._make_individual(self._mutate(c2)))
             else:
                 new_pop.append(self._make_individual(self._mutate(p1)))
-        return new_pop[: self.config.popsize]
+        return self._apply_pre_lr_immigrants(new_pop)
 
     def _bb_search_enabled(self) -> bool:
         return self.config.bb_search_mode != "none"
@@ -609,7 +658,7 @@ class GeneticFeatureSelector:
                 new_pop.append(self._make_individual(self._mutate(c2)))
             else:
                 new_pop.append(self._make_individual(self._mutate(p1)))
-        return new_pop[: self.config.popsize]
+        return self._apply_pre_lr_immigrants(new_pop)
 
     def _has_current_building_blocks(self) -> bool:
         """Return True only when the latest LTGA snapshot contains usable blocks."""

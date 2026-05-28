@@ -13,8 +13,10 @@ RegressionStage = Literal[
 RegressionSolver = Literal[
     "auto",
     "sklearn_full",
-    "matrix_free",
+    "dual_ridge",
+    "matrix_free",  # backward-compatible alias for dual_ridge
 ]
+LREncoding = Literal["binary", "spin"]
 
 
 def _num_pairs(n_features: int) -> int:
@@ -281,16 +283,22 @@ class RegressionVIG:
 
 
 class PairwiseDesignBuilder:
-    """Build 0/1 main-effect and active pairwise-monomial designs.
+    """Build main-effect and pairwise interaction designs.
 
-    Pairwise columns are ordinary binary monomials ``x_i * x_j``.  A pair only
-    contributes signal on archive rows where both features are active; pairs that
-    have never co-occurred have zero-variance columns and are ignored by Lasso.
+    ``encoding="binary"`` keeps the original feature-selection variables
+    ``x in {0,1}`` and uses active-pair terms ``x_i*x_j``.  A positive
+    coefficient is therefore a co-selection effect.
+
+    ``encoding="spin"`` uses ``u = 2x - 1`` and pair terms ``u_i*u_j``.  A
+    positive coefficient then means same-state linkage (00/11 vs 01/10).
     """
 
-    def __init__(self, n_features: int, *, include_main: bool) -> None:
+    def __init__(self, n_features: int, *, include_main: bool, encoding: LREncoding = "binary") -> None:
         self.n_features = int(n_features)
         self.include_main = bool(include_main)
+        if encoding not in {"binary", "spin"}:
+            raise ValueError("encoding must be either binary or spin")
+        self.encoding: LREncoding = encoding
         self._pair_i, self._pair_j = _full_pair_indices(self.n_features)
 
     @property
@@ -298,7 +306,10 @@ class PairwiseDesignBuilder:
         return int(self._pair_i.size)
 
     def _main_matrix(self, X_bits: np.ndarray) -> np.ndarray:
-        return np.asarray(X_bits, dtype=np.float64)
+        X = np.asarray(X_bits, dtype=np.float64)
+        if self.encoding == "binary":
+            return X
+        return 2.0 * X - 1.0
 
     def build(self, X_bits: np.ndarray) -> _DesignData:
         main = self._main_matrix(X_bits)
@@ -320,7 +331,7 @@ class PairwiseDesignBuilder:
 
 
 class PairwiseLassoEstimator:
-    """Pairwise Lasso on binary active-pair monomials: y ~= sum theta_ij x_i x_j."""
+    """Pairwise Lasso on pseudo-Boolean interactions: y ~= sum theta_ij u_i u_j."""
 
     def __init__(self, *, design_builder: PairwiseDesignBuilder, alpha: float, random_state: int) -> None:
         self.design_builder = design_builder
@@ -343,6 +354,7 @@ class PartialMainPairwiseLassoEstimator:
         self.pairwise_builder = PairwiseDesignBuilder(
             self.design_builder.n_features,
             include_main=False,
+            encoding=self.design_builder.encoding,
         )
         self.alpha = float(alpha)
         self.random_state = int(random_state)
@@ -360,12 +372,99 @@ class PartialMainPairwiseLassoEstimator:
         return _active_pair_coefficients(pair_design.pair_i, pair_design.pair_j, coef)
 
 
+class DualPairwiseRidgeEstimator:
+    """Exact dual ridge solver for pairwise regression-linkage.
+
+    This replaces the older proximal matrix-free approximation on high-dimensional
+    datasets.  It solves the same pairwise regression model in dual form by
+    building only the n x n pairwise kernel, never the n x d(d-1)/2 design.
+    For type 3, main effects are treated as unpenalized controls by residualizing
+    the pairwise kernel and target with respect to [1, main effects].
+    """
+
+    def __init__(
+        self,
+        *,
+        n_features: int,
+        alpha: float,
+        random_state: int,
+        encoding: LREncoding = "binary",
+        include_main_controls: bool = False,
+        max_active_edges: int | None = None,
+    ) -> None:
+        self.n_features = int(n_features)
+        self.alpha = float(alpha)
+        self.random_state = int(random_state)
+        if encoding not in {"binary", "spin"}:
+            raise ValueError("encoding must be either binary or spin")
+        self.encoding: LREncoding = encoding
+        self.include_main_controls = bool(include_main_controls)
+        self.max_active_edges = max_active_edges
+
+    def _encoded(self, X_bits: np.ndarray) -> np.ndarray:
+        X = np.asarray(X_bits, dtype=np.float64)
+        if self.encoding == "binary":
+            return X
+        return 2.0 * X - 1.0
+
+    def _pair_kernel(self, Z: np.ndarray) -> np.ndarray:
+        # K_ab = sum_{i<j} phi_ij(a) phi_ij(b), without materializing phi.
+        G = np.ascontiguousarray(Z @ Z.T, dtype=np.float64)
+        if self.encoding == "binary":
+            return 0.5 * G * (G - 1.0)
+        return 0.5 * (G * G - float(self.n_features))
+
+    @staticmethod
+    def _residualize_kernel(K: np.ndarray, Q: np.ndarray | None) -> np.ndarray:
+        if Q is None or Q.size == 0:
+            return K
+        # M K M, where M = I - Q Q^T.  This keeps type-3 main effects as
+        # controls without building residualized pair columns.
+        left = K - Q @ (Q.T @ K)
+        return np.ascontiguousarray(left - (left @ Q) @ Q.T, dtype=np.float64)
+
+    def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
+        Z = self._encoded(X_bits)
+        y_arr = np.asarray(y, dtype=np.float64).reshape(-1)
+        n, d = Z.shape
+        if n < 2 or d < 2:
+            empty = np.empty(0, dtype=np.int32)
+            return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
+
+        K = self._pair_kernel(Z)
+        alpha_target = y_arr
+        q_controls: np.ndarray | None = None
+        if self.include_main_controls:
+            controls = np.hstack([np.ones((n, 1), dtype=np.float64), Z])
+            q_controls = _orthonormal_basis(controls)
+            alpha_target = _residualize_with_basis(y_arr, q_controls)
+            K = self._residualize_kernel(K, q_controls)
+
+        ridge = max(float(self.alpha), 1e-10)
+        A = K + ridge * np.eye(n, dtype=np.float64)
+        try:
+            alpha_dual = np.linalg.solve(A, alpha_target)
+        except np.linalg.LinAlgError:
+            alpha_dual = np.linalg.lstsq(A, alpha_target, rcond=None)[0]
+        alpha_eff = _residualize_with_basis(alpha_dual, q_controls) if q_controls is not None else alpha_dual
+
+        # beta_ij = sum_t alpha_t z_ti z_tj = (Z^T diag(alpha) Z)_ij.
+        coef_matrix = Z.T @ (alpha_eff.reshape(-1, 1) * Z)
+        np.fill_diagonal(coef_matrix, 0.0)
+        return _active_pair_coefficients_from_matrix(
+            coef_matrix,
+            tol=1e-10,
+            top_k=self.max_active_edges,
+        )
+
+
 class MatrixFreePairwiseLassoEstimator:
-    """Matrix-free proximal Lasso for binary active-pair monomials.
+    """Matrix-free proximal Lasso for pseudo-Boolean pairwise interactions.
 
     It optimizes the same standardized pairwise objective as the dense Lasso path
-    without creating Z in R^{n x d(d-1)/2}.  Pair columns exist implicitly as
-    ``z_ij = x_i * x_j``.  Jointly inactive features therefore contribute zero signal.
+    without creating Z in R^{n x d(d-1)/2}.  GA masks ``x`` are converted to
+    ``u = 2x - 1`` internally, and pair columns exist implicitly as
+    ``z_ij = u_i * u_j``.
     """
 
     def __init__(
@@ -390,19 +489,20 @@ class MatrixFreePairwiseLassoEstimator:
         self.dtype = np.float32 if str(dtype) == "float32" else np.float64
 
     def fit(self, X_bits: np.ndarray, y: np.ndarray) -> _PairCoefficientData:
-        X = np.asarray(X_bits, dtype=self.dtype)
+        X0 = np.asarray(X_bits, dtype=self.dtype)
+        X = (self.dtype(2.0) * X0 - self.dtype(1.0)).astype(self.dtype, copy=False)
         y_arr = np.asarray(y, dtype=self.dtype).reshape(-1)
         n, d = X.shape
         if n < 2 or d < 2:
             empty = np.empty(0, dtype=np.int32)
             return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
 
-        # Binary active-pair monomial moments.  For z_ij = x_i*x_j in {0,1},
-        # E[z_ij^2] = E[z_ij], so Var(z_ij) = p_ij*(1-p_ij).  Pairs that never
-        # co-occur have p_ij=0, inv_scale=0, and cannot produce coefficients.
+        # Pseudo-Boolean interaction moments. For z_ij = u_i*u_j in {-1,+1},
+        # E[z_ij^2] = 1, hence Var(z_ij) = 1 - E[z_ij]^2.  Constant pair
+        # columns are ignored by setting inv_scale to zero.
         pair_mean = (X.T @ X).astype(self.dtype, copy=False) / self.dtype(n)
         np.fill_diagonal(pair_mean, 0.0)
-        pair_var = np.maximum(pair_mean * (self.dtype(1.0) - pair_mean), self.dtype(0.0)).astype(self.dtype, copy=False)
+        pair_var = np.maximum(self.dtype(1.0) - pair_mean * pair_mean, self.dtype(0.0)).astype(self.dtype, copy=False)
         active_pair = pair_var > self.dtype(1e-12)
         inv_scale = np.zeros_like(pair_var, dtype=self.dtype)
         inv_scale[active_pair] = self.dtype(1.0) / np.sqrt(pair_var[active_pair]).astype(self.dtype, copy=False)
@@ -419,7 +519,10 @@ class MatrixFreePairwiseLassoEstimator:
         # fixed at zero because self-interactions are not graph edges.
         W = np.zeros((d, d), dtype=self.dtype)
         p = max(1, int(np.count_nonzero(np.triu(active_pair, k=1))))
-        step0 = self.dtype(self.step_scale * max(1, n) / float(max(1, p)))
+        # Conservative ISTA step for standardized pseudo-Boolean pair columns.
+        # The older binary-monomial path used n/p; for u_i*u_j columns this can
+        # be too aggressive on small archives because all pair columns are active.
+        step0 = self.dtype(self.step_scale / float(max(1, p)))
 
         for _ in range(self.max_iter):
             pred = _matrix_free_pair_predict(X, W, pair_mean, inv_scale)
@@ -519,12 +622,25 @@ def _active_pair_coefficients(pair_i: np.ndarray, pair_j: np.ndarray, coef: np.n
     )
 
 
-def _active_pair_coefficients_from_matrix(coef_matrix: np.ndarray, *, tol: float = 1e-6) -> _PairCoefficientData:
-    upper = np.triu(np.abs(coef_matrix) > float(tol), k=1)
-    if not np.any(upper):
+def _active_pair_coefficients_from_matrix(
+    coef_matrix: np.ndarray,
+    *,
+    tol: float = 1e-6,
+    top_k: int | None = None,
+) -> _PairCoefficientData:
+    abs_upper = np.triu(np.abs(coef_matrix), k=1)
+    mask = abs_upper > float(tol)
+    if not np.any(mask):
         empty = np.empty(0, dtype=np.int32)
         return _PairCoefficientData(empty, empty, np.empty(0, dtype=float))
-    pair_i, pair_j = np.nonzero(upper)
+    if top_k is not None and int(top_k) > 0 and int(top_k) < int(np.count_nonzero(mask)):
+        flat = abs_upper.ravel()
+        k = int(top_k)
+        idx = np.argpartition(flat, -k)[-k:]
+        idx = idx[np.argsort(-flat[idx])]
+        pair_i, pair_j = np.unravel_index(idx, coef_matrix.shape)
+    else:
+        pair_i, pair_j = np.nonzero(mask)
     coefs = coef_matrix[pair_i, pair_j]
     return _PairCoefficientData(
         np.asarray(pair_i, dtype=np.int32),
@@ -609,6 +725,8 @@ class RegressionLinkageLearner:
         stability_fraction: float = 0.75,
         random_state: int = 1,
         solver: RegressionSolver = "auto",
+        encoding: LREncoding = "binary",
+        edge_top_k: int | None = None,
         matrix_free_threshold: int = 700,
         matrix_free_max_iter: int = 8,
         matrix_free_tol: float = 1e-4,
@@ -625,6 +743,10 @@ class RegressionLinkageLearner:
         self.stability_fraction = float(stability_fraction)
         self.random_state = int(random_state)
         self.solver = str(solver)
+        if encoding not in {"binary", "spin"}:
+            raise ValueError("encoding must be either binary or spin")
+        self.encoding: LREncoding = encoding
+        self.edge_top_k = None if edge_top_k is None else int(edge_top_k)
         self.matrix_free_threshold = int(matrix_free_threshold)
         self.matrix_free_max_iter = int(matrix_free_max_iter)
         self.matrix_free_tol = float(matrix_free_tol)
@@ -645,33 +767,35 @@ class RegressionLinkageLearner:
     @property
     def active_solver(self) -> str:
         if self.solver == "matrix_free":
-            return "matrix_free"
+            # Backward-compatible CLI value; the approximate matrix-free path has
+            # been replaced by the exact dual-ridge high-dimensional path.
+            return "dual_ridge"
+        if self.solver == "dual_ridge":
+            return "dual_ridge"
         if self.solver == "sklearn_full":
             return "sklearn_full"
-        return "matrix_free" if self.n_features >= self.matrix_free_threshold else "sklearn_full"
+        return "dual_ridge" if self.n_features >= self.matrix_free_threshold else "sklearn_full"
 
     def _build_estimator(self) -> _RegressionEstimator:
         solver = self.active_solver
-        if solver == "matrix_free":
-            return MatrixFreePairwiseLassoEstimator(
+        if solver == "dual_ridge":
+            return DualPairwiseRidgeEstimator(
                 n_features=self.n_features,
                 alpha=self.sparse_alpha,
                 random_state=self.random_state,
+                encoding=self.encoding,
                 include_main_controls=self.include_main_effects,
-                max_iter=self.matrix_free_max_iter,
-                tol=self.matrix_free_tol,
-                step_scale=self.matrix_free_step_scale,
-                dtype=self.matrix_free_dtype,
+                max_active_edges=self.edge_top_k,
             )
         if self.stage == "pairwise_lasso":
             return PairwiseLassoEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=False),
+                design_builder=PairwiseDesignBuilder(self.n_features, include_main=False, encoding=self.encoding),
                 alpha=self.sparse_alpha,
                 random_state=self.random_state,
             )
         if self.stage == "main_pairwise_lasso":
             return PartialMainPairwiseLassoEstimator(
-                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True),
+                design_builder=PairwiseDesignBuilder(self.n_features, include_main=True, encoding=self.encoding),
                 alpha=self.sparse_alpha,
                 random_state=self.random_state,
             )
@@ -772,6 +896,7 @@ class RegressionLinkageLearner:
         builder = PairwiseDesignBuilder(
             self.n_features,
             include_main=self.include_main_effects,
+            encoding=self.encoding,
         )
         design = builder.build(X_bits)
         return design.X, design.pair_start

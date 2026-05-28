@@ -77,8 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-stability-fraction", type=float, default=0.75, help="Fraction of archive used per stability-selection subsample")
     parser.add_argument("--lr-edge-min-weight", type=float, default=0.0, help="Drop LR edges with final importance below this value")
     parser.add_argument("--lr-edge-top-k", type=int, default=None, help="Keep only the top-K LR edges in the final graph")
-    parser.add_argument("--lr-solver", choices=["auto", "sklearn_full", "matrix_free"], default="auto", help="LR solver: auto uses dense sklearn for d<threshold and matrix-free for d>=threshold")
-    parser.add_argument("--lr-matrix-free-threshold", type=int, default=500, help="Feature-count cutoff for auto matrix-free LR fallback; d >= threshold uses matrix-free")
+    parser.add_argument("--lr-encoding", choices=["binary", "spin"], default="binary", help="LR pair encoding: binary uses x_i*x_j; spin uses u_i*u_j where u=2x-1")
+    parser.add_argument("--lr-solver", choices=["auto", "sklearn_full", "dual_ridge", "matrix_free"], default="auto", help="LR solver: auto uses dense sklearn for d<threshold and exact dual_ridge for d>=threshold; matrix_free is an alias for dual_ridge")
+    parser.add_argument("--lr-matrix-free-threshold", type=int, default=500, help="Feature-count cutoff for auto dual-ridge fallback; d >= threshold uses dual_ridge")
     parser.add_argument("--lr-matrix-free-max-iter", type=int, default=32, help="Matrix-free proximal iterations per LR fit")
     parser.add_argument("--lr-matrix-free-tol", type=float, default=1e-4, help="Matrix-free stopping tolerance")
     parser.add_argument("--lr-matrix-free-step-scale", type=float, default=0.5, help="Multiplier for matrix-free proximal step size")
@@ -102,6 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bb-accept-equal-sparser", type=str2bool, default=True, help="Accept equal-fitness pattern refinements only when they reduce subset size")
     parser.add_argument("--bb-shuffle-blocks", type=str2bool, default=True, help="Shuffle selected blocks before applying BB operators")
     parser.add_argument("--bb-signed-repair-probability", type=float, default=0.75, help="Probability of repairing signed-mode copied blocks to same/opposite schema")
+    parser.add_argument("--pre-lr-explore", type=str2bool, default=False, help="Before the first LR graph fit, temporarily boost exploration; after the first successful LR fit, return to normal settings")
+    parser.add_argument("--pre-lr-mutation-multiplier", type=float, default=3.0, help="Multiply the normal mutation probability during --pre-lr-explore")
+    parser.add_argument("--pre-lr-immigrant-rate", type=float, default=0.0, help="Replace this fraction of the worst offspring with random immigrants during --pre-lr-explore")
     return parser
 
 
@@ -146,6 +150,7 @@ def main(argv: list[str] | None = None) -> None:
         lr_stability_fraction=args.lr_stability_fraction,
         lr_edge_min_weight=args.lr_edge_min_weight,
         lr_edge_top_k=args.lr_edge_top_k,
+        lr_encoding=args.lr_encoding,
         lr_solver=args.lr_solver,
         lr_matrix_free_threshold=args.lr_matrix_free_threshold,
         lr_matrix_free_max_iter=args.lr_matrix_free_max_iter,
@@ -169,6 +174,9 @@ def main(argv: list[str] | None = None) -> None:
         bb_accept_equal_sparser=args.bb_accept_equal_sparser,
         bb_shuffle_blocks=args.bb_shuffle_blocks,
         bb_signed_repair_probability=args.bb_signed_repair_probability,
+        pre_lr_explore=args.pre_lr_explore,
+        pre_lr_mutation_multiplier=args.pre_lr_mutation_multiplier,
+        pre_lr_immigrant_rate=args.pre_lr_immigrant_rate,
     )
     exp_cfg = ExperimentConfig(
         outer_folds=args.outer_folds,
@@ -188,8 +196,14 @@ def main(argv: list[str] | None = None) -> None:
             f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
             f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
             f"delta={ga_cfg.lr_delta}, edge_top_k={ga_cfg.lr_edge_top_k}, "
-            f"solver={ga_cfg.lr_solver}, mf_threshold={ga_cfg.lr_matrix_free_threshold}"
+            f"encoding={ga_cfg.lr_encoding}, solver={ga_cfg.lr_solver}, "
+            f"auto_dual_threshold={ga_cfg.lr_matrix_free_threshold}"
         )
+        if ga_cfg.pre_lr_explore:
+            print(
+                f"Pre-LR exploration: mutation_multiplier={ga_cfg.pre_lr_mutation_multiplier}, "
+                f"immigrant_rate={ga_cfg.pre_lr_immigrant_rate}; auto-off after first LR fit"
+            )
     if ga_cfg.build_building_blocks and ga_cfg.ga_type != 0:
         print(
             f"LTGA building blocks: mode={ga_cfg.bb_weight_mode}, search={ga_cfg.bb_search_mode}, "
