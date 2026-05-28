@@ -22,14 +22,14 @@ It writes paper-friendly CSV tables for:
 
 Example, full evaluation root:
     python scripts/summarize_method_outputs.py `
-        --input ../Results/results_fs_main `
+        --input ../Results/results_analysis_small_tab_3 `
         --mode all `
         --baseline-method standard_ga `
-        --output-dir ../Results/results_fs_main/comparison_summary
+        --output-dir ../Results/results_analysis_small_tab_3/comparison_summary
 
 Example, one dataset folder:
     python scripts/summarize_method_outputs.py `
-        --input "../Results/results_analysis_small/vehicle_uci (1)" `
+        --input "../Results/results_analysis_small_tab/vehicle_uci" `
         --mode dataset `
         --baseline-method standard_ga
 

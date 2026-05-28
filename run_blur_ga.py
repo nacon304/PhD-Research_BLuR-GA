@@ -758,39 +758,18 @@ if __name__ == "__main__":
 python run_blur_ga.py batch `
   --preset analysis `
   --data-dir ../Dataset/prepared_feature_selection `
-  --output-root ../Results/results_analysis_med_high_2 `
-  --dataset-group medium_highdim `
-  --classifiers 2 `
-  --ga-types 2 3 `
-  --repeat 1 `
-  --inner-folds 4 `
-  --outer-folds 4 `
-  --bb-pattern-top-fraction 0.20 `
-  --build-building-blocks true `
-  --bb-weight-mode positive `
-  --bb-search-mode uniform `
-  --bb-gawll-update-interval 10 `
-  --save-generation-trace true `
-  --save-graph-snapshots false `
-  --save-linkage-events false `
-  --artifact-layout nested `
-  --write-aggregate-outputs false
-
-python run_blur_ga.py batch `
-  --preset analysis `
-  --data-dir ../Dataset/prepared_feature_selection `
-  --output-root ../Results/results_analysis_small_2 `
+  --output-root ../Results/results_analysis_small_tab_5 `
   --dataset-group small_tabular `
   --classifiers 2 `
   --ga-types 2 3 `
-  --repeat 1 `
+  --repeat 4 `
   --inner-folds 4 `
   --outer-folds 4 `
   --bb-pattern-top-fraction 0.20 `
   --build-building-blocks true `
-  --bb-weight-mode positive `
-  --bb-search-mode pattern_refine `
-  --bb-gawll-update-interval 10 `
+  --bb-weight-mode signed `
+  --bb-search-mode uniform `
+  --bb-gawll-update-interval 20 `
   --save-generation-trace true `
   --save-graph-snapshots false `
   --save-linkage-events false `
