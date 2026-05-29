@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "D:\PhD\The Second Paper\Implementation\GAwLL_python_port\BLuR-GA\run_blur_ga.py", line 17, in <module>
+    import json
+  File "C:\Python312\Lib\json\__init__.py", line 106, in <module>
+    from .decoder import JSONDecoder, JSONDecodeError
+  File "C:\Python312\Lib\json\decoder.py", line 5, in <module>
+    from json import scanner
+  File "C:\Python312\Lib\json\scanner.py", line 5, in <module>
+    from _json import make_scanner as c_make_scanner
+  File "<frozen importlib._bootstrap>", line 1357, in _find_and_load
+KeyboardInterrupt

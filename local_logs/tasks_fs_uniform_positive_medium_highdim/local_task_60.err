@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "D:\PhD\The Second Paper\Implementation\GAwLL_python_port\BLuR-GA\run_blur_ga.py", line 18, in <module>
+    import subprocess
+  File "C:\Python312\Lib\subprocess.py", line 53, in <module>
+    import contextlib
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1124, in get_code
+  File "<frozen importlib._bootstrap_external>", line 753, in _compile_bytecode
+KeyboardInterrupt

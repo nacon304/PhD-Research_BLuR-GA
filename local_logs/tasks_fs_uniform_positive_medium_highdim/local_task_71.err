@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "D:\PhD\The Second Paper\Implementation\GAwLL_python_port\BLuR-GA\run_blur_ga.py", line 20, in <module>
+    from dataclasses import dataclass
+  File "C:\Python312\Lib\dataclasses.py", line 3, in <module>
+    import copy
+  File "C:\Python312\Lib\copy.py", line 52, in <module>
+    import weakref
+  File "C:\Python312\Lib\weakref.py", line 356, in <module>
+    class WeakKeyDictionary(_collections_abc.MutableMapping):
+  File "<frozen abc>", line 107, in __new__
+KeyboardInterrupt

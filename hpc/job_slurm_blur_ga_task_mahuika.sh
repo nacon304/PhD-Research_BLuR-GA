@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=BLuR_FS
 #SBATCH --account=vuw04643
-#SBATCH --partition=parallel
+#SBATCH --partition=genoa
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01-00:00:00
@@ -21,19 +21,10 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 cd "$PROJECT_DIR"
 
-# Load/activate your Python environment. Edit this block if your environment name/path differs.
-if command -v conda >/dev/null 2>&1; then
-  source "$(conda info --base)/etc/profile.d/conda.sh"
-  conda activate "$CONDA_ENV"
-elif [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
-  source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate "$CONDA_ENV"
-elif [[ -f "$HOME/Miniforge3/etc/profile.d/conda.sh" ]]; then
-  source "$HOME/Miniforge3/etc/profile.d/conda.sh"
-  conda activate "$CONDA_ENV"
-else
-  echo "WARNING: conda not found; using PYTHON_BIN=$PYTHON_BIN from current environment" >&2
-fi
+module purge
+module load Miniconda3
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-/nesi/project/vuw04643/nguyennha1/conda/envs/blur_ga}"
 
 export MPLBACKEND=Agg
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"

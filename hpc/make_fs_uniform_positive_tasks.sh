@@ -14,10 +14,14 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 DATA_DIR="${DATA_DIR:-../Dataset/prepared_feature_selection}"
-RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_full}"
-TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_full.csv}"
-DATASET_GROUP="${DATASET_GROUP:-all}"
+RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_medium_highdim}"
+TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_medium_highdim.csv}"
+DATASET_GROUP="${DATASET_GROUP:-medium_highdim}"
+# RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_full}"
+# TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_full.csv}"
+# DATASET_GROUP="${DATASET_GROUP:-all}"
 CLASSIFIERS="${CLASSIFIERS:-2}"
+PYTHON_BIN="${PYTHON_BIN:-python.exe}"
 
 cd "$PROJECT_DIR"
 mkdir -p "$(dirname "$TASKS_OUT")" "$RESULTS_ROOT" hpc/_task_parts
@@ -30,7 +34,7 @@ COMMON_ARGS=(
   --classifiers $CLASSIFIERS
   --repeat 1
   --inner-folds 4
-  --outer-folds 5
+  --outer-folds 4
   --bb-pattern-top-fraction 0.20
   --bb-weight-mode positive
   --bb-search-mode uniform
@@ -49,7 +53,7 @@ make_part() {
   shift
   local part="hpc/_task_parts/${name}.csv"
   echo "[make-tasks] $name -> $part"
-  python run_blur_ga.py make-tasks "${COMMON_ARGS[@]}" "$@" --tasks-out "$part"
+  "$PYTHON_BIN" run_blur_ga.py make-tasks "${COMMON_ARGS[@]}" "$@" --tasks-out "$part"
 }
 
 # Method-folder names encode type1 BB suffixes and type2 encoding/pre flags,
@@ -81,21 +85,21 @@ make_part type2_uniform_positive_binary_pre \
   --lr-encoding binary \
   --pre-lr-explore true
 
-make_part type2_uniform_positive_spin_nopre \
-  --output-root "$RESULTS_ROOT" \
-  --ga-types 2 \
-  --build-building-blocks true \
-  --lr-encoding spin \
-  --pre-lr-explore false
+# make_part type2_uniform_positive_spin_nopre \
+#   --output-root "$RESULTS_ROOT" \
+#   --ga-types 2 \
+#   --build-building-blocks true \
+#   --lr-encoding spin \
+#   --pre-lr-explore false
 
-make_part type2_uniform_positive_spin_pre \
-  --output-root "$RESULTS_ROOT" \
-  --ga-types 2 \
-  --build-building-blocks true \
-  --lr-encoding spin \
-  --pre-lr-explore true
+# make_part type2_uniform_positive_spin_pre \
+#   --output-root "$RESULTS_ROOT" \
+#   --ga-types 2 \
+#   --build-building-blocks true \
+#   --lr-encoding spin \
+#   --pre-lr-explore true
 
-python - <<'PY' "$TASKS_OUT" hpc/_task_parts/*.csv
+"$PYTHON_BIN" - <<'PY' "$TASKS_OUT" hpc/_task_parts/*.csv
 import csv
 import sys
 from pathlib import Path

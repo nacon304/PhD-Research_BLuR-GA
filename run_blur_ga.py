@@ -253,7 +253,7 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_edge_top_k": None,
         "lr_solver": "auto",
         "lr_encoding": "binary",
-        "lr_matrix_free_threshold": 700,
+        "lr_matrix_free_threshold": 100,
         "lr_matrix_free_max_iter": 8,
         "lr_matrix_free_tol": 1e-4,
         "lr_matrix_free_step_scale": 0.5,
@@ -787,12 +787,13 @@ if __name__ == "__main__":
 python run_blur_ga.py batch `
   --preset analysis `
   --data-dir ../Dataset/prepared_feature_selection `
-  --output-root ../Results/results_analysis_small_tab_5 `
+  --output-root ../Results/results_analysis_med_high `
+  --datasets colon_asu `
   --classifiers 2 `
-  --ga-types 2 `
-  --repeat 4 `
+  --ga-types 0 1 2 `
+  --repeat 1 `
   --inner-folds 4 `
-  --outer-folds 4 `
+  --outer-folds 5 `
   --bb-pattern-top-fraction 0.20 `
   --build-building-blocks true `
   --bb-weight-mode positive `

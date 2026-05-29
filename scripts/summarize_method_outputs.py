@@ -22,10 +22,10 @@ It writes paper-friendly CSV tables for:
 
 Example, full evaluation root:
     python scripts/summarize_method_outputs.py `
-        --input ../Results/results_analysis_small_tab_3 `
+        --input ../Results/results_fs_uniform_positive_small_tabular `
         --mode all `
         --baseline-method standard_ga `
-        --output-dir ../Results/results_analysis_small_tab_3/comparison_summary
+        --output-dir ../Results/results_fs_uniform_positive_small_tabular/comparison_summary
 
 Example, one dataset folder:
     python scripts/summarize_method_outputs.py `
