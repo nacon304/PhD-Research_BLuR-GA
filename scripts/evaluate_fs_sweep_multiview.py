@@ -19,10 +19,10 @@ It reads the output of `python run_blur_ga.py aggregate --results-root ...`, i.e
 Examples
 --------
 python scripts/evaluate_fs_sweep_multiview.py `
-  --results-root ../Results/results_fs_uniform_positive_small_tabular
+  --results-root ../Results/results_fs_uniform_positive_small
 
 python scripts/evaluate_fs_sweep_multiview.py `
-  --results-root ../Results/results_fs_uniform_positive_small_tabular `
+  --results-root ../Results/results_fs_final_except_small `
   --exclude-datasets lymphography_uci `
   --baseline-method standard_ga
 """

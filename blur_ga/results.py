@@ -51,6 +51,7 @@ class ResultWriter:
     classifier_type: int
     ga_type: int
     artifact_layout: ArtifactLayout = "both"
+    save_evig_edge_files: bool = False
     rows: list[EvaluatedRun] = field(default_factory=list)
     prefix_override: str | None = None
 
@@ -141,8 +142,9 @@ class ResultWriter:
                     "Use eVIG_edges.csv and eVIG_tested_pairs.csv for the active sparse graph.\n",
                     encoding="utf-8",
                 )
-            row.run_result.evig.save_edges(target_dir / self._artifact_name("eVIG_edges", row, root_level=root_level))
-            row.run_result.evig.save_tested_pairs(target_dir / self._artifact_name("eVIG_tested_pairs", row, root_level=root_level))
+            if self.save_evig_edge_files:
+                row.run_result.evig.save_edges(target_dir / self._artifact_name("eVIG_edges", row, root_level=root_level))
+                row.run_result.evig.save_tested_pairs(target_dir / self._artifact_name("eVIG_tested_pairs", row, root_level=root_level))
 
         self._write_linkage_events(row, run_dir)
         self._write_graph_snapshots(row, run_dir)
@@ -414,8 +416,8 @@ class ResultWriter:
                 self.output_dir / self._artifact_name("building_blocks", row, root_level=True),
             ))
         summary_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
-            "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode", "bb_score_mode", "bb_selection_mode",
+            "n_features", "n_graph_edges", "n_candidates", "n_qualified", "n_blocks", "coverage_budget", "selected_feature_coverage", "mean_block_size",
             "max_block_size", "mean_score", "max_score", "mean_internal_abs",
             "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
             "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
@@ -423,7 +425,7 @@ class ResultWriter:
         ]
         block_header = [
             "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
-            "block_id", "features", "size", "score", "density", "internal_abs_mean",
+            "block_id", "features", "size", "score", "raw_score", "stability_count", "stability_factor", "density", "internal_abs_mean",
             "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
             "n_internal_edges", "n_positive_edges", "n_negative_edges",
             "signed_balance", "n_sign_conflicts", "polarity", "positive_group", "negative_group", "schema_hint",
@@ -442,10 +444,15 @@ class ResultWriter:
                             item.get("bb_method", "ltga"),
                             item.get("bb_weight_mode", ""),
                             item.get("bb_search_mode", "none"),
+                            item.get("bb_score_mode", "current"),
+                            item.get("bb_selection_mode", "count"),
                             int(item.get("n_features", 0)),
                             int(item.get("n_graph_edges", 0)),
                             int(item.get("n_candidates", 0)),
+                            int(item.get("n_qualified", item.get("n_candidates", 0))),
                             int(item.get("n_blocks", 0)),
+                            int(item.get("coverage_budget", 0)),
+                            int(item.get("selected_feature_coverage", 0)),
                             f"{float(item.get('mean_block_size', 0.0)):.14f}",
                             int(item.get("max_block_size", 0)),
                             f"{float(item.get('mean_score', 0.0)):.14f}",
@@ -478,6 +485,9 @@ class ResultWriter:
                             item.get("features", ""),
                             int(item.get("size", 0)),
                             f"{float(item.get('score', 0.0)):.14f}",
+                            f"{float(item.get('raw_score', item.get('score', 0.0))):.14f}",
+                            int(item.get("stability_count", 0)),
+                            f"{float(item.get('stability_factor', 1.0)):.14f}",
                             f"{float(item.get('density', 0.0)):.14f}",
                             f"{float(item.get('internal_abs_mean', 0.0)):.14f}",
                             f"{float(item.get('internal_positive_mean', 0.0)):.14f}",
@@ -501,8 +511,8 @@ class ResultWriter:
         summary_path = self.output_dir / f"building_block_summary_{self.prefix}.csv"
         block_path = self.output_dir / f"building_blocks_{self.prefix}.csv"
         summary_header = [
-            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
-            "n_features", "n_graph_edges", "n_candidates", "n_blocks", "mean_block_size",
+            "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode", "bb_score_mode", "bb_selection_mode",
+            "n_features", "n_graph_edges", "n_candidates", "n_qualified", "n_blocks", "coverage_budget", "selected_feature_coverage", "mean_block_size",
             "max_block_size", "mean_score", "max_score", "mean_internal_abs",
             "mean_internal_positive", "mean_internal_negative_abs", "mean_signed_balance",
             "n_positive_edges_in_blocks", "n_negative_edges_in_blocks", "n_sign_conflicts_in_blocks",
@@ -510,7 +520,7 @@ class ResultWriter:
         ]
         block_header = [
             "repeat_id", "outer_fold", "run_id", "generation", "bb_method", "bb_weight_mode", "bb_search_mode",
-            "block_id", "features", "size", "score", "density", "internal_abs_mean",
+            "block_id", "features", "size", "score", "raw_score", "stability_count", "stability_factor", "density", "internal_abs_mean",
             "internal_positive_mean", "internal_negative_abs_mean", "external_abs_mean",
             "n_internal_edges", "n_positive_edges", "n_negative_edges",
             "signed_balance", "n_sign_conflicts", "polarity", "positive_group", "negative_group", "schema_hint",
@@ -526,8 +536,10 @@ class ResultWriter:
                     writer.writerow([
                         row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
                         item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""), item.get("bb_search_mode", "none"),
+                        item.get("bb_score_mode", "current"), item.get("bb_selection_mode", "count"),
                         int(item.get("n_features", 0)), int(item.get("n_graph_edges", 0)),
-                        int(item.get("n_candidates", 0)), int(item.get("n_blocks", 0)),
+                        int(item.get("n_candidates", 0)), int(item.get("n_qualified", item.get("n_candidates", 0))), int(item.get("n_blocks", 0)),
+                        int(item.get("coverage_budget", 0)), int(item.get("selected_feature_coverage", 0)),
                         f"{float(item.get('mean_block_size', 0.0)):.14f}", int(item.get("max_block_size", 0)),
                         f"{float(item.get('mean_score', 0.0)):.14f}", f"{float(item.get('max_score', 0.0)):.14f}",
                         f"{float(item.get('mean_internal_abs', 0.0)):.14f}",
@@ -554,7 +566,11 @@ class ResultWriter:
                         row.repeat_id, row.outer_fold, row.run_id, int(item.get("generation", 0)),
                         item.get("bb_method", "ltga"), item.get("bb_weight_mode", ""), item.get("bb_search_mode", "none"),
                         int(item.get("block_id", 0)), item.get("features", ""), int(item.get("size", 0)),
-                        f"{float(item.get('score', 0.0)):.14f}", f"{float(item.get('density', 0.0)):.14f}",
+                        f"{float(item.get('score', 0.0)):.14f}",
+                        f"{float(item.get('raw_score', item.get('score', 0.0))):.14f}",
+                        int(item.get("stability_count", 0)),
+                        f"{float(item.get('stability_factor', 1.0)):.14f}",
+                        f"{float(item.get('density', 0.0)):.14f}",
                         f"{float(item.get('internal_abs_mean', 0.0)):.14f}",
                         f"{float(item.get('internal_positive_mean', 0.0)):.14f}",
                         f"{float(item.get('internal_negative_abs_mean', 0.0)):.14f}",

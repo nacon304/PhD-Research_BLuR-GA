@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .building_blocks import BBWeightMode
+from .building_blocks import BBSelectionMode, BBScoreMode, BBWeightMode
 from .bb_search import BBSearchMode
 
 ProblemType = Literal["classification", "regression"]
@@ -19,7 +19,8 @@ class GAConfig:
 
     ga_type:
         0 = standard GA, 1 = empirical linkage GA, 
-        2 = pairwise Lasso, 3 = partial main+pairwise Lasso.
+        2 = pairwise Lasso, 3 = linkage-guided pair-only CGGA-style GA,
+        4 = linkage-guided pair + Fisher-main CGGA-style GA.
     classifier_type:
         1 = KNN with k=3, 2 = KNN with k=5.
     crossover_probability:
@@ -54,6 +55,7 @@ class GAConfig:
     save_generation_trace: bool = False
     save_linkage_events: bool = False
     save_graph_snapshots: bool = False
+    save_evig_edge_files: bool = False
     graph_snapshot_interval: int = 1
     graph_snapshot_top_k: int | None = None
     graph_snapshot_min_weight: float = 0.0
@@ -61,9 +63,10 @@ class GAConfig:
     fitness_weight_sparsity: float = 0.02
     cache_fitness: bool = True
 
-    # Regression-linkage learner settings for ga_type 2/3.
+    # Regression-linkage learner settings for ga_type 2/3/4.
     # ga_type 2: theory-aligned pairwise Lasso using binary active-pair terms.
-    # ga_type 3: theory-aligned partial Main+Pairwise Lasso with unpenalized main controls.
+    # ga_type 3: CGGA-style guided crossover/mutation using learned pairwise linkage only.
+    # ga_type 4: CGGA-style guided crossover/mutation using learned pairwise linkage plus Fisher main effects.
     lr_gap_gen: int = 5
     lr_min_samples: int = 20
     lr_sparse_alpha: float = 0.001
@@ -94,16 +97,31 @@ class GAConfig:
     lr_matrix_free_step_scale: float = 0.5
     lr_matrix_free_dtype: Literal["float64", "float32"] = "float32"
 
+    # CGGA-style guided operator settings for ga_type 3/4.
+    # These are analogous to k1/k2 in Zhou & Hua (2022), but score candidates
+    # with the learned linkage graph/building blocks rather than data correlation.
+    guided_crossover_checks: int = 40
+    guided_mutation_checks: int = 40
+    guided_pair_weight: float = 1.0
+    guided_main_weight: float = 1.0
+    guided_sparsity_weight: float = 0.02
+
     # Optional LTGA-style building-block extraction from the current linkage graph.
     # When bb_search_mode is "none", blocks are diagnostic only.  The two active
     # search modes are "uniform" and "pattern_refine" for ga_type 2/3.
     build_building_blocks: bool = False
     bb_weight_mode: BBWeightMode = "absolute"
+    bb_score_mode: Literal["current", "current_stability", "current_stability_regression"] = "current_stability_regression"
+    bb_selection_mode: BBSelectionMode = "coverage_budget"
     bb_search_mode: BBSearchMode = "none"
     bb_gawll_update_interval: int | None = None
     bb_min_block_size: int = 2
     bb_max_block_size: int | None = None
     bb_max_blocks: int = 20
+    bb_max_blocks_cap: int = 128
+    bb_coverage_ratio: float = 0.50
+    bb_coverage_min: int = 10
+    bb_coverage_cap: int = 256
     bb_snapshot_interval: int = 1
     bb_external_penalty: float = 0.25
     bb_size_penalty: float = 0.01
@@ -127,8 +145,8 @@ class GAConfig:
     def __post_init__(self) -> None:
         if self.classifier_type not in (1, 2):
             raise ValueError("classifier_type must be 1 (KNN-3) or 2 (KNN-5).")
-        if self.ga_type not in (0, 1, 2, 3):
-            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, 2 pairwise Lasso, or 3 main+pairwise Lasso.")
+        if self.ga_type not in (0, 1, 2, 3, 4):
+            raise ValueError("ga_type must be 0 standard, 1 empirical linkage GA, 2 pairwise Lasso, 3 linkage-guided pair, or 4 linkage-guided pair+Fisher.")
         if self.popsize < 4:
             raise ValueError("popsize must be at least 4.")
         if not 0.0 <= self.crossover_probability <= 1.0:
@@ -185,12 +203,26 @@ class GAConfig:
             raise ValueError("lr_matrix_free_step_scale must be positive.")
         if self.lr_matrix_free_dtype not in {"float64", "float32"}:
             raise ValueError("lr_matrix_free_dtype must be float64 or float32.")
+        if self.guided_crossover_checks < 0:
+            raise ValueError("guided_crossover_checks must be non-negative.")
+        if self.guided_mutation_checks < 0:
+            raise ValueError("guided_mutation_checks must be non-negative.")
+        if self.guided_pair_weight < 0:
+            raise ValueError("guided_pair_weight must be non-negative.")
+        if self.guided_main_weight < 0:
+            raise ValueError("guided_main_weight must be non-negative.")
+        if self.guided_sparsity_weight < 0:
+            raise ValueError("guided_sparsity_weight must be non-negative.")
         if self.bb_weight_mode not in {"absolute", "signed", "positive"}:
             raise ValueError("bb_weight_mode must be one of: absolute, signed, positive.")
+        if self.bb_score_mode not in {"current", "current_stability", "current_stability_regression"}:
+            raise ValueError("bb_score_mode must be one of: current, current_stability, current_stability_regression.")
+        if self.bb_selection_mode not in {"count", "coverage_budget"}:
+            raise ValueError("bb_selection_mode must be one of: count, coverage_budget.")
         if self.bb_search_mode not in {"none", "uniform", "pattern_refine"}:
             raise ValueError("bb_search_mode must be one of: none, uniform, pattern_refine.")
-        if self.bb_search_mode != "none" and self.ga_type not in (1, 2, 3):
-            raise ValueError("bb_search_mode requires a linkage-capable ga_type: 1, 2, or 3.")
+        if self.bb_search_mode != "none" and self.ga_type not in (1, 2, 3, 4):
+            raise ValueError("bb_search_mode requires a linkage-capable ga_type: 1, 2, 3, or 4.")
         if self.bb_gawll_update_interval is not None and self.bb_gawll_update_interval < 1:
             raise ValueError("bb_gawll_update_interval must be None or at least 1.")
         if self.bb_min_block_size < 2:
@@ -199,6 +231,14 @@ class GAConfig:
             raise ValueError("bb_max_block_size must be None or >= bb_min_block_size.")
         if self.bb_max_blocks < 1:
             raise ValueError("bb_max_blocks must be positive.")
+        if self.bb_max_blocks_cap < 1:
+            raise ValueError("bb_max_blocks_cap must be positive.")
+        if not 0.0 < self.bb_coverage_ratio <= 1.0:
+            raise ValueError("bb_coverage_ratio must be in (0, 1].")
+        if self.bb_coverage_min < self.bb_min_block_size:
+            raise ValueError("bb_coverage_min must be >= bb_min_block_size.")
+        if self.bb_coverage_cap < self.bb_coverage_min:
+            raise ValueError("bb_coverage_cap must be >= bb_coverage_min.")
         if self.bb_snapshot_interval < 1:
             raise ValueError("bb_snapshot_interval must be at least 1.")
         if self.bb_external_penalty < 0:
@@ -222,7 +262,7 @@ class GAConfig:
 
     @property
     def _regression_stage_for_validation(self) -> str | None:
-        return {2: "pairwise_lasso", 3: "main_pairwise_lasso"}.get(self.ga_type)
+        return {2: "pairwise_lasso", 3: "pairwise_lasso", 4: "pairwise_lasso"}.get(self.ga_type)
 
     @property
     def knn_k(self) -> int:

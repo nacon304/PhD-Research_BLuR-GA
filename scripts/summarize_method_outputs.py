@@ -22,14 +22,14 @@ It writes paper-friendly CSV tables for:
 
 Example, full evaluation root:
     python scripts/summarize_method_outputs.py `
-        --input ../Results/results_fs_uniform_positive_small_tabular `
+        --input ../Results/results_fs_uniform_positive_small `
         --mode all `
         --baseline-method standard_ga `
-        --output-dir ../Results/results_fs_uniform_positive_small_tabular/comparison_summary
+        --output-dir ../Results/results_fs_uniform_positive_small/comparison_summary
 
 Example, one dataset folder:
     python scripts/summarize_method_outputs.py `
-        --input "../Results/results_analysis_small_tab/vehicle_uci" `
+        --input "../Results/results_fs_uniform_positive_small/wdbc_uci" `
         --mode dataset `
         --baseline-method standard_ga
 
@@ -73,11 +73,20 @@ class MethodDir:
 
 
 def _safe_read_csv(path: Path) -> pd.DataFrame:
+    """Read result CSVs defensively.
+
+    Some run_summary files contain very large integer-like strings (for example
+    serialized chromosomes, hashes, or RNG states). Pandas' default type
+    inference can try to cast those columns to numeric dtypes and fail with
+    "int too large to convert to float" before the summary script has a
+    chance to ignore non-metric columns. Read every column as text first, then
+    let _as_numeric() convert only the known metric/id columns.
+    """
     try:
-        return pd.read_csv(path)
+        return pd.read_csv(path, dtype=str, low_memory=False)
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
-    except Exception as exc:  # keep batch summary robust
+    except Exception as exc:
         print(f"[WARN] Could not read {path}: {exc}", file=sys.stderr)
         return pd.DataFrame()
 

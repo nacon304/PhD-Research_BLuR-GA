@@ -905,7 +905,8 @@ class RegressionLinkageLearner:
 def ga_type_to_regression_stage(ga_type: int) -> RegressionStage | None:
     mapping: dict[int, RegressionStage] = {
         2: "pairwise_lasso",
-        3: "main_pairwise_lasso",
+        3: "pairwise_lasso",
+        4: "pairwise_lasso",
     }
     return mapping.get(int(ga_type))
 

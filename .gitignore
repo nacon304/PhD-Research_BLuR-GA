@@ -220,3 +220,6 @@ __marimo__/
 # other
 Results/
 documents/
+hpc/_task_parts/
+hpc/*.csv
+local_logs/

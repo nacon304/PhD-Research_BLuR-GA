@@ -121,6 +121,7 @@ def build_ga_config(args: argparse.Namespace, ga_type: int) -> GAConfig:
         save_generation_trace=args.save_generation_trace,
         save_linkage_events=args.save_linkage_events,
         save_graph_snapshots=args.save_graph_snapshots,
+        save_evig_edge_files=args.save_evig_edge_files,
         graph_snapshot_interval=args.graph_snapshot_interval,
         graph_snapshot_top_k=args.graph_snapshot_top_k,
         graph_snapshot_min_weight=args.graph_snapshot_min_weight,
@@ -317,6 +318,7 @@ def run_one(args: argparse.Namespace, row: dict[str, str], ga_type: int, repeat_
             0,
             ga_type,
             artifact_layout=args.artifact_layout,
+            save_evig_edge_files=args.save_evig_edge_files,
             prefix_override=compact_run_prefix(ga_type),
         )
         erow = EvaluatedRun(
@@ -417,7 +419,8 @@ def add_run_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--edge-epsilon", type=float, default=1e-6)
     p.add_argument("--save-generation-trace", type=str2bool, default=True)
     p.add_argument("--save-linkage-events", type=str2bool, default=False)
-    p.add_argument("--save-graph-snapshots", type=str2bool, default=True)
+    p.add_argument("--save-graph-snapshots", type=str2bool, default=False)
+    p.add_argument("--save-evig-edge-files", type=str2bool, default=False, help="Save final eVIG_edges.csv and eVIG_tested_pairs.csv files")
     p.add_argument("--graph-snapshot-interval", type=int, default=1)
     p.add_argument("--graph-snapshot-top-k", type=int, default=None)
     p.add_argument("--graph-snapshot-min-weight", type=float, default=0.0)
@@ -505,6 +508,7 @@ def _run_command_from_args(args: argparse.Namespace, *, dataset: str, ga_type: i
         "--save-generation-trace", str(bool(args.save_generation_trace)).lower(),
         "--save-linkage-events", str(bool(args.save_linkage_events)).lower(),
         "--save-graph-snapshots", str(bool(args.save_graph_snapshots)).lower(),
+        "--save-evig-edge-files", str(bool(args.save_evig_edge_files)).lower(),
         "--graph-snapshot-interval", str(args.graph_snapshot_interval),
         "--graph-snapshot-min-weight", str(args.graph_snapshot_min_weight),
         "--lr-gap-gen", str(args.lr_gap_gen),

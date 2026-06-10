@@ -102,7 +102,8 @@ METHOD_FOLDER_NAMES: dict[int, str] = {
     0: "standard_ga",
     1: "empirical_linkage_legacy",
     2: "blur_ga_pairwise_lasso",
-    3: "blur_ga_main_pairwise_lasso",
+    3: "linkage_guided_pair",
+    4: "linkage_guided_pair_fisher",
 }
 
 
@@ -125,9 +126,9 @@ def method_folder_name(
     """
     base = METHOD_FOLDER_NAMES.get(int(ga_type), f"method_{int(ga_type)}")
     mode = str(bb_search_mode or "none").strip().lower()
-    if int(ga_type) in {1, 2, 3} and mode != "none":
+    if int(ga_type) in {1, 2, 3, 4} and mode != "none":
         suffix = f"{mode}_{str(bb_weight_mode).strip().lower()}"
-        if int(ga_type) in {2, 3}:
+        if int(ga_type) in {2, 3, 4}:
             suffix = f"{suffix}_{str(lr_encoding).strip().lower()}"
             if pre_lr_explore is not None:
                 pre_bool = str(pre_lr_explore).strip().lower() in {"1", "true", "yes", "y"}
@@ -232,7 +233,8 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "edge_epsilon": 1e-6,
         "save_generation_trace": True,
         "save_linkage_events": False,
-        "save_graph_snapshots": True,
+        "save_graph_snapshots": False,
+        "save_evig_edge_files": False,
         "graph_snapshot_interval": 1,
         "graph_snapshot_top_k": None,
         "graph_snapshot_min_weight": 0.0,
@@ -258,15 +260,26 @@ def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "lr_matrix_free_tol": 1e-4,
         "lr_matrix_free_step_scale": 0.5,
         "lr_matrix_free_dtype": "float32",
+        "guided_crossover_checks": 40,
+        "guided_mutation_checks": 40,
+        "guided_pair_weight": 1.0,
+        "guided_main_weight": 1.0,
+        "guided_sparsity_weight": 0.02,
         "artifact_layout": "root",
         "write_aggregate_outputs": True,
         "build_building_blocks": False,
         "bb_weight_mode": "absolute",
+        "bb_score_mode": "current_stability_regression",
+        "bb_selection_mode": "coverage_budget",
         "bb_search_mode": "none",
         "bb_gawll_update_interval": None,
         "bb_min_block_size": 2,
         "bb_max_block_size": None,
         "bb_max_blocks": 20,
+        "bb_max_blocks_cap": 128,
+        "bb_coverage_ratio": 0.50,
+        "bb_coverage_min": 10,
+        "bb_coverage_cap": 256,
         "bb_snapshot_interval": 1,
         "bb_external_penalty": 0.25,
         "bb_size_penalty": 0.01,
@@ -314,7 +327,7 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
     # linkage graph and therefore cannot consume BB search operators.  Normalize
     # them per job so mixed batches such as ``--ga-types 0 1 2 3`` can compare
     # standard GA against BB-aware methods without failing configuration checks.
-    linkage_capable = job.ga_type in (1, 2, 3)
+    linkage_capable = job.ga_type in (1, 2, 3, 4)
     build_building_blocks = bool(args.build_building_blocks) and linkage_capable
     bb_search_mode = str(args.bb_search_mode) if linkage_capable else "none"
 
@@ -340,6 +353,7 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--edge-epsilon", str(args.edge_epsilon),
         "--save-generation-trace", str(bool(args.save_generation_trace)).lower(),
         "--save-linkage-events", str(bool(args.save_linkage_events)).lower(),
+        "--save-evig-edge-files", str(bool(args.save_evig_edge_files)).lower(),
         "--save-graph-snapshots", str(bool(args.save_graph_snapshots)).lower(),
         "--graph-snapshot-interval", str(args.graph_snapshot_interval),
         "--graph-snapshot-min-weight", str(args.graph_snapshot_min_weight),
@@ -361,11 +375,22 @@ def common_oop_args(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr-matrix-free-tol", str(args.lr_matrix_free_tol),
         "--lr-matrix-free-step-scale", str(args.lr_matrix_free_step_scale),
         "--lr-matrix-free-dtype", str(args.lr_matrix_free_dtype),
+        "--guided-crossover-checks", str(args.guided_crossover_checks),
+        "--guided-mutation-checks", str(args.guided_mutation_checks),
+        "--guided-pair-weight", str(args.guided_pair_weight),
+        "--guided-main-weight", str(args.guided_main_weight),
+        "--guided-sparsity-weight", str(args.guided_sparsity_weight),
         "--build-building-blocks", str(build_building_blocks).lower(),
         "--bb-weight-mode", str(args.bb_weight_mode),
+        "--bb-score-mode", str(args.bb_score_mode),
+        "--bb-selection-mode", str(args.bb_selection_mode),
         "--bb-search-mode", bb_search_mode,
         "--bb-min-block-size", str(args.bb_min_block_size),
         "--bb-max-blocks", str(args.bb_max_blocks),
+        "--bb-max-blocks-cap", str(args.bb_max_blocks_cap),
+        "--bb-coverage-ratio", str(args.bb_coverage_ratio),
+        "--bb-coverage-min", str(args.bb_coverage_min),
+        "--bb-coverage-cap", str(args.bb_coverage_cap),
         "--bb-snapshot-interval", str(args.bb_snapshot_interval),
         "--bb-external-penalty", str(args.bb_external_penalty),
         "--bb-size-penalty", str(args.bb_size_penalty),
@@ -442,6 +467,7 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--save-generation-trace", type=str2bool, default=None)
     p.add_argument("--save-linkage-events", type=str2bool, default=None)
     p.add_argument("--save-graph-snapshots", type=str2bool, default=None)
+    p.add_argument("--save-evig-edge-files", type=str2bool, default=None)
     p.add_argument("--graph-snapshot-interval", type=int, default=None)
     p.add_argument("--graph-snapshot-top-k", type=int, default=None)
     p.add_argument("--graph-snapshot-min-weight", type=float, default=None)
@@ -467,13 +493,24 @@ def add_shared_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lr-matrix-free-tol", type=float, default=None)
     p.add_argument("--lr-matrix-free-step-scale", type=float, default=None)
     p.add_argument("--lr-matrix-free-dtype", choices=["float64", "float32"], default=None)
+    p.add_argument("--guided-crossover-checks", type=int, default=None)
+    p.add_argument("--guided-mutation-checks", type=int, default=None)
+    p.add_argument("--guided-pair-weight", type=float, default=None)
+    p.add_argument("--guided-main-weight", type=float, default=None)
+    p.add_argument("--guided-sparsity-weight", type=float, default=None)
     p.add_argument("--build-building-blocks", type=str2bool, default=None)
     p.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default=None)
+    p.add_argument("--bb-score-mode", choices=["current", "current_stability", "current_stability_regression"], default=None)
+    p.add_argument("--bb-selection-mode", choices=["count", "coverage_budget"], default=None)
     p.add_argument("--bb-search-mode", choices=["none", "uniform", "pattern_refine"], default=None)
     p.add_argument("--bb-gawll-update-interval", type=int, default=None)
     p.add_argument("--bb-min-block-size", type=int, default=None)
     p.add_argument("--bb-max-block-size", type=int, default=None)
     p.add_argument("--bb-max-blocks", type=int, default=None)
+    p.add_argument("--bb-max-blocks-cap", type=int, default=None)
+    p.add_argument("--bb-coverage-ratio", type=float, default=None)
+    p.add_argument("--bb-coverage-min", type=int, default=None)
+    p.add_argument("--bb-coverage-cap", type=int, default=None)
     p.add_argument("--bb-snapshot-interval", type=int, default=None)
     p.add_argument("--bb-external-penalty", type=float, default=None)
     p.add_argument("--bb-size-penalty", type=float, default=None)

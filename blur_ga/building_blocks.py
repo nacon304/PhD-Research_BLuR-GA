@@ -26,6 +26,8 @@ from scipy.cluster.hierarchy import linkage, to_tree
 from scipy.spatial.distance import squareform
 
 BBWeightMode = Literal["absolute", "signed", "positive"]
+BBScoreMode = Literal["current", "current_stability"]
+BBSelectionMode = Literal["count", "coverage_budget"]
 
 _EPS = 1e-12
 
@@ -137,6 +139,9 @@ class BuildingBlock:
     negative_group: str = ""
     schema_hint: str = ""
     source: str = "ltga_internal_node"
+    raw_score: float = 0.0
+    stability_count: int = 0
+    stability_factor: float = 1.0
 
     @property
     def size(self) -> int:
@@ -151,10 +156,15 @@ class BuildingBlock:
 class BuildingBlockSnapshot:
     generation: int
     mode: BBWeightMode
+    score_mode: BBScoreMode
+    selection_mode: BBSelectionMode
     n_features: int
     n_graph_edges: int
     n_candidates: int
+    n_qualified: int
     n_blocks: int
+    coverage_budget: int
+    selected_feature_coverage: int
     mean_block_size: float
     max_block_size: int
     mean_score: float
@@ -173,10 +183,15 @@ class BuildingBlockSnapshot:
             "generation": int(self.generation),
             "bb_method": "ltga",
             "bb_weight_mode": self.mode,
+            "bb_score_mode": self.score_mode,
+            "bb_selection_mode": self.selection_mode,
             "n_features": int(self.n_features),
             "n_graph_edges": int(self.n_graph_edges),
             "n_candidates": int(self.n_candidates),
+            "n_qualified": int(self.n_qualified),
             "n_blocks": int(self.n_blocks),
+            "coverage_budget": int(self.coverage_budget),
+            "selected_feature_coverage": int(self.selected_feature_coverage),
             "mean_block_size": float(self.mean_block_size),
             "max_block_size": int(self.max_block_size),
             "mean_score": float(self.mean_score),
@@ -195,9 +210,15 @@ class BuildingBlockSnapshot:
 class LTGABuildingBlockConfig:
     enabled: bool = False
     weight_mode: BBWeightMode = "absolute"
+    score_mode: BBScoreMode = "current"
+    selection_mode: BBSelectionMode = "coverage_budget"
     min_block_size: int = 2
     max_block_size: int | None = None
     max_blocks: int = 20
+    max_blocks_cap: int = 128
+    coverage_ratio: float = 0.50
+    coverage_min: int = 10
+    coverage_cap: int = 256
     snapshot_interval: int = 1
     external_penalty: float = 0.25
     size_penalty: float = 0.01
@@ -208,6 +229,9 @@ class LTGABuildingBlockExtractor:
 
     def __init__(self, config: LTGABuildingBlockConfig) -> None:
         self.config = config
+        # Counts how often an identical candidate block was seen in previous
+        # linkage updates of this run.  It is intentionally per-extractor/per-run.
+        self._block_history: dict[tuple[int, ...], int] = {}
 
     def extract(self, view: LinkageGraphView, *, generation: int) -> BuildingBlockSnapshot:
         weight = view.strength_matrix(self.config.weight_mode)
@@ -222,20 +246,50 @@ class LTGABuildingBlockExtractor:
         scored = [self._score_block(tuple(sorted(set(c))), weight, signed, generation=generation) for c in candidates]
         scored = [b for b in scored if b.score > 0.0]
         scored.sort(key=lambda b: (-b.score, b.size, b.features))
+        n_qualified = int(len(scored))
 
-        selected: list[BuildingBlock] = []
-        used: set[int] = set()
+        selected = self._select_blocks(scored, n_features)
+
+        # Update stability history after selection/scoring so the first time a
+        # block appears uses factor 1.0 and repeated future appearances are rewarded.
         for block in scored:
-            if any(f in used for f in block.features):
-                continue
-            selected.append(self._with_block_id(block, len(selected)))
-            used.update(int(f) for f in block.features)
-            if len(selected) >= self.config.max_blocks:
-                break
+            self._block_history[block.features] = self._block_history.get(block.features, 0) + 1
 
         selected.sort(key=lambda b: (b.size, -b.score, b.features))
         selected = [self._with_block_id(b, i) for i, b in enumerate(selected)]
-        return self._snapshot(generation, n_features, n_graph_edges, len(candidates), selected)
+        return self._snapshot(generation, n_features, n_graph_edges, len(candidates), n_qualified, selected)
+
+    def _coverage_budget(self, n_features: int) -> int:
+        budget = int(np.ceil(float(self.config.coverage_ratio) * int(n_features)))
+        budget = max(int(self.config.coverage_min), budget)
+        budget = min(int(self.config.coverage_cap), budget)
+        return max(int(self.config.min_block_size), min(budget, int(n_features)))
+
+    def _select_blocks(self, scored: list[BuildingBlock], n_features: int) -> list[BuildingBlock]:
+        selected: list[BuildingBlock] = []
+        used: set[int] = set()
+        hard_cap = int(self.config.max_blocks if self.config.selection_mode == "count" else self.config.max_blocks_cap)
+        hard_cap = max(1, hard_cap)
+        coverage_budget = self._coverage_budget(n_features) if self.config.selection_mode == "coverage_budget" else int(n_features)
+
+        for block in scored:
+            block_features = {int(f) for f in block.features}
+            if block_features & used:
+                continue
+            if self.config.selection_mode == "coverage_budget" and selected:
+                if len(used | block_features) > coverage_budget:
+                    continue
+            selected.append(self._with_block_id(block, len(selected)))
+            used.update(block_features)
+            if len(selected) >= hard_cap:
+                break
+
+        # Always keep the best non-overlapping block if there are positive-scored
+        # candidates.  This avoids disabling BB crossover just because the coverage
+        # budget is very small for a tiny dataset.
+        if not selected and scored:
+            selected.append(self._with_block_id(scored[0], 0))
+        return selected
 
     @staticmethod
     def _with_block_id(block: BuildingBlock, block_id: int) -> BuildingBlock:
@@ -259,6 +313,9 @@ class LTGABuildingBlockExtractor:
             negative_group=block.negative_group,
             schema_hint=block.schema_hint,
             source=block.source,
+            raw_score=float(block.raw_score),
+            stability_count=int(block.stability_count),
+            stability_factor=float(block.stability_factor),
         )
 
     def _internal_tree_nodes(self, weight: np.ndarray) -> list[tuple[int, ...]]:
@@ -502,11 +559,16 @@ class LTGABuildingBlockExtractor:
             # should also admit a coherent same/opposite polarity assignment.
             base_score *= max(0.0, float(polarity.signed_balance))
 
+        raw_score = float(max(0.0, base_score))
+        history_count = int(self._block_history.get(features, 0))
+        stability_factor = float(np.sqrt(1.0 + history_count)) if self.config.score_mode == "current_stability" else 1.0
+        final_score = raw_score * stability_factor
+
         return BuildingBlock(
             generation=int(generation),
             block_id=0,
             features=features,
-            score=float(max(0.0, base_score)),
+            score=float(max(0.0, final_score)),
             density=density,
             internal_abs_mean=internal_abs_mean,
             internal_positive_mean=internal_pos,
@@ -521,6 +583,9 @@ class LTGABuildingBlockExtractor:
             positive_group=polarity.positive_group_str if self.config.weight_mode == "signed" else "",
             negative_group=polarity.negative_group_str if self.config.weight_mode == "signed" else "",
             schema_hint=polarity.schema_hint if self.config.weight_mode == "signed" else "",
+            raw_score=float(raw_score),
+            stability_count=int(history_count),
+            stability_factor=float(stability_factor),
         )
 
     def _infer_signed_polarity(self, features: tuple[int, ...], weight: np.ndarray, signed: np.ndarray) -> SignedPolarity:
@@ -613,6 +678,7 @@ class LTGABuildingBlockExtractor:
         n_features: int,
         n_graph_edges: int,
         n_candidates: int,
+        n_qualified: int,
         selected: list[BuildingBlock],
     ) -> BuildingBlockSnapshot:
         if selected:
@@ -640,10 +706,15 @@ class LTGABuildingBlockExtractor:
         return BuildingBlockSnapshot(
             generation=int(generation),
             mode=self.config.weight_mode,
+            score_mode=self.config.score_mode,
+            selection_mode=self.config.selection_mode,
             n_features=int(n_features),
             n_graph_edges=int(n_graph_edges),
             n_candidates=int(n_candidates),
+            n_qualified=int(n_qualified),
             n_blocks=int(len(selected)),
+            coverage_budget=int(self._coverage_budget(n_features) if self.config.selection_mode == "coverage_budget" else n_features),
+            selected_feature_coverage=int(len({int(f) for b in selected for f in b.features})),
             mean_block_size=mean_size,
             max_block_size=max_size,
             mean_score=mean_score,

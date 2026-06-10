@@ -100,13 +100,25 @@ class GeneticFeatureSelector:
                 signed_repair_probability=self.config.bb_signed_repair_probability,
             )
         if self.config.build_building_blocks or self._bb_search_enabled():
+            resolved_score_mode = (
+                "current_stability"
+                if self.config.bb_score_mode == "current_stability_regression" and self.config.ga_type in (2, 3, 4)
+                else "current" if self.config.bb_score_mode == "current_stability_regression"
+                else self.config.bb_score_mode
+            )
             self._bb_extractor = LTGABuildingBlockExtractor(
                 LTGABuildingBlockConfig(
                     enabled=True,
                     weight_mode=self.config.bb_weight_mode,
+                    score_mode=resolved_score_mode,
+                    selection_mode=self.config.bb_selection_mode,
                     min_block_size=self.config.bb_min_block_size,
                     max_block_size=self.config.bb_max_block_size,
                     max_blocks=self.config.bb_max_blocks,
+                    max_blocks_cap=self.config.bb_max_blocks_cap,
+                    coverage_ratio=self.config.bb_coverage_ratio,
+                    coverage_min=self.config.bb_coverage_min,
+                    coverage_cap=self.config.bb_coverage_cap,
                     snapshot_interval=self.config.bb_snapshot_interval,
                     external_penalty=self.config.bb_external_penalty,
                     size_penalty=self.config.bb_size_penalty,
@@ -144,6 +156,9 @@ class GeneticFeatureSelector:
                 matrix_free_step_scale=config.lr_matrix_free_step_scale,
                 matrix_free_dtype=config.lr_matrix_free_dtype,
             )
+        self._guided_main_scores: np.ndarray | None = None
+        if self.config.ga_type == 4:
+            self._guided_main_scores = self._compute_fisher_main_scores()
 
     def run(self) -> RunResult:
         start = time.perf_counter()
@@ -184,7 +199,17 @@ class GeneticFeatureSelector:
             elif self._regression_stage is not None:
                 assert isinstance(evig, RegressionVIG)
                 lr_updated = False
-                if self._bb_search_enabled():
+                if self.config.ga_type in (3, 4):
+                    # CGGA-style guided variants: refit linkage first, rebuild
+                    # blocks when available, then choose the best among several
+                    # candidate crossover/mutation outcomes using a cheap
+                    # linkage/Fisher score.
+                    if generation % self.config.lr_gap_gen == 0:
+                        lr_updated = self._fit_regression_graph(evig, generation)
+                    if lr_updated:
+                        self._capture_building_blocks(evig, generation, force=True)
+                    self.population = self._next_generation_linkage_guided(evig)
+                elif self._bb_search_enabled():
                     # BB search uses the most recent LR graph.  Refit first,
                     # rebuild blocks if the graph changed, then generate offspring.
                     if generation % self.config.lr_gap_gen == 0:
@@ -198,9 +223,9 @@ class GeneticFeatureSelector:
                         lr_updated = self._fit_regression_graph(evig, generation)
                 if self.config.save_graph_snapshots and generation % self.config.graph_snapshot_interval == 0:
                     self._capture_graph_snapshot(evig, generation)
-                # For type 2/3 diagnostics, rebuild only when the LR graph has
-                # actually been refit and no BB-search rebuild already happened.
-                if lr_updated and not self._bb_search_enabled():
+                # For regression diagnostics, rebuild only when the LR graph has
+                # actually been refit and no BB/guided rebuild already happened.
+                if lr_updated and not self._bb_search_enabled() and self.config.ga_type not in (3, 4):
                     self._capture_building_blocks(evig, generation, force=True)
             else:
                 self.population = self._next_generation_standard()
@@ -494,6 +519,9 @@ class GeneticFeatureSelector:
                     "negative_group": block.negative_group,
                     "schema_hint": block.schema_hint,
                     "source": block.source,
+                    "raw_score": float(block.raw_score),
+                    "stability_count": int(block.stability_count),
+                    "stability_factor": float(block.stability_factor),
                 }
             )
 
@@ -566,7 +594,7 @@ class GeneticFeatureSelector:
     def _in_pre_lr_exploration_phase(self) -> bool:
         """Return True before the first regression-linkage graph is fitted.
 
-        This phase is only meaningful for ga_type 2/3.  It starts after the
+        This phase is only meaningful for ga_type 2/3/4.  It starts after the
         initial population is evaluated and ends immediately after the first
         successful LR fit updates ``_last_lr_archive_size``.
         """
@@ -617,6 +645,198 @@ class GeneticFeatureSelector:
 
     def _make_individual(self, chrom: np.ndarray) -> Individual:
         return Individual(chrom.astype(np.int8, copy=False), self._evaluate(chrom))
+
+    def _compute_fisher_main_scores(self) -> np.ndarray:
+        """Compute a normalized Fisher score for every original feature.
+
+        Type 4 uses this as the main-effect term in its cheap CGGA-style
+        pre-screening score.  The calculation only uses the inner-training
+        portions available to the fitness evaluator, so it does not look at the
+        outer test fold.
+        """
+        scores = []
+        for split in self.evaluator.splits:
+            X = np.asarray(split.X_train, dtype=np.float64)
+            y = np.asarray(split.y_train)
+            if X.ndim != 2 or X.shape[1] != self.n_features:
+                continue
+            overall = np.mean(X, axis=0)
+            between = np.zeros(self.n_features, dtype=np.float64)
+            within = np.zeros(self.n_features, dtype=np.float64)
+            for cls in np.unique(y):
+                Xc = X[y == cls]
+                if Xc.size == 0:
+                    continue
+                mu = np.mean(Xc, axis=0)
+                between += float(Xc.shape[0]) * np.square(mu - overall)
+                within += np.sum(np.square(Xc - mu), axis=0)
+            score = between / (within + 1e-12)
+            scores.append(np.nan_to_num(score, nan=0.0, posinf=0.0, neginf=0.0))
+        if not scores:
+            return np.zeros(self.n_features, dtype=np.float64)
+        out = np.mean(np.vstack(scores), axis=0)
+        max_score = float(np.max(out)) if out.size else 0.0
+        if max_score > 0.0 and np.isfinite(max_score):
+            out = out / max_score
+        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float64, copy=False)
+
+    def _has_fast_guidance(self, evig: RegressionVIG | None) -> bool:
+        has_pair = bool(evig is not None and evig.n_edges > 0)
+        has_main = bool(self.config.ga_type == 4 and self._guided_main_scores is not None and np.any(self._guided_main_scores > 0.0))
+        return has_pair or has_main
+
+    def _linkage_pair_score(self, chrom: np.ndarray, evig: RegressionVIG | None) -> float:
+        if evig is None or evig.n_edges <= 0:
+            return 0.0
+        x = np.asarray(chrom, dtype=np.float64).reshape(-1)
+        n_selected = int(np.sum(x))
+        if n_selected <= 0:
+            return -1e12
+
+        weight_mode = str(self.config.bb_weight_mode).lower()
+        weight = np.asarray(evig.weight, dtype=np.float64)
+        if hasattr(evig, "coefficient_matrix"):
+            coef = np.asarray(evig.coefficient_matrix(), dtype=np.float64)
+        else:
+            coef = weight
+
+        if weight_mode == "positive":
+            mat = np.maximum(coef, 0.0)
+            pair_sum = 0.5 * float(x @ mat @ x)
+        elif weight_mode == "signed":
+            # Positive coefficient: reward co-selected pairs.
+            # Negative coefficient: reward XOR states, so the selected subset
+            # respects an opposite-polarity relation without rewarding 00.
+            pos = np.maximum(coef, 0.0)
+            neg = np.maximum(-coef, 0.0)
+            pair_sum = 0.5 * float(x @ pos @ x)
+            if np.any(neg > 0.0):
+                xor = np.abs(x[:, None] - x[None, :])
+                pair_sum += 0.5 * float(np.sum(neg * xor))
+        else:
+            pair_sum = 0.5 * float(x @ weight @ x)
+
+        n_pairs = max(1.0, float(n_selected * max(1, n_selected - 1) / 2.0))
+        return pair_sum / np.sqrt(n_pairs)
+
+    def _building_block_bonus(self, chrom: np.ndarray) -> float:
+        snapshot = self._latest_building_block_snapshot
+        if snapshot is None or not snapshot.blocks:
+            return 0.0
+        x = np.asarray(chrom, dtype=np.int8)
+        total = 0.0
+        used = 0
+        for block in snapshot.blocks:
+            idx = np.asarray(block.features, dtype=int)
+            if idx.size == 0:
+                continue
+            selected = int(np.sum(x[idx]))
+            if selected <= 0:
+                continue
+            # Reward a block proportionally to how much of the selected FOS unit
+            # is present.  This keeps the score usable even before a whole block
+            # is copied atomically by the crossover operator.
+            total += float(block.score) * float(selected) / float(idx.size)
+            used += 1
+        return total / np.sqrt(float(max(1, used)))
+
+    def _fast_guided_subset_score(self, chrom: np.ndarray, evig: RegressionVIG | None) -> float:
+        x = np.asarray(chrom, dtype=np.int8).reshape(-1)
+        n_selected = int(np.sum(x))
+        if n_selected <= 0:
+            return -1e12
+        sparsity = float((self.n_features - n_selected) / max(1, self.n_features))
+        pair_score = self._linkage_pair_score(x, evig) + self._building_block_bonus(x)
+        main_score = 0.0
+        if self.config.ga_type == 4 and self._guided_main_scores is not None:
+            main_score = float(np.sum(self._guided_main_scores * x) / np.sqrt(float(max(1, n_selected))))
+        return (
+            float(self.config.guided_pair_weight) * float(pair_score)
+            + float(self.config.guided_main_weight) * float(main_score)
+            + float(self.config.guided_sparsity_weight) * sparsity
+        )
+
+    def _sample_crossover_candidate(self, p1: np.ndarray, p2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # If LTGA blocks have been extracted, generate a block-wise uniform
+        # crossover candidate; otherwise fall back to the plain uniform GA mask.
+        if self._has_current_building_blocks():
+            return self._building_block_uniform_crossover(p1, p2)
+        return self._uniform_crossover(p1, p2)
+
+    def _guided_crossover(self, p1: np.ndarray, p2: np.ndarray, evig: RegressionVIG | None) -> tuple[np.ndarray, np.ndarray]:
+        if int(self.config.guided_crossover_checks) <= 0:
+            return self._sample_crossover_candidate(p1, p2)
+        if not self._has_fast_guidance(evig):
+            return self._sample_crossover_candidate(p1, p2)
+        best_pair: tuple[np.ndarray, np.ndarray] | None = None
+        best_score = -np.inf
+        for _ in range(int(self.config.guided_crossover_checks)):
+            c1, c2 = self._sample_crossover_candidate(p1, p2)
+            score = max(self._fast_guided_subset_score(c1, evig), self._fast_guided_subset_score(c2, evig))
+            if score > best_score:
+                best_score = float(score)
+                best_pair = (c1, c2)
+        assert best_pair is not None
+        return best_pair
+
+    def _sample_mutation_candidate(self, chrom: np.ndarray) -> np.ndarray:
+        # Most trials use the normal bit-flip mutation.  When a current FOS is
+        # available, some trials mutate one learned block atomically so mutation
+        # can also exploit the same linkage/building-block information.
+        if self._has_current_building_blocks() and self.rng.random() < 0.50:
+            blocks = self._bb_variation.ordered_blocks(self._latest_building_block_snapshot) if self._bb_variation else list(self._latest_building_block_snapshot.blocks)
+            if blocks:
+                weights = np.asarray([max(0.0, float(b.score)) for b in blocks], dtype=np.float64)
+                if float(np.sum(weights)) <= 0.0:
+                    idx_block = int(self.rng.integers(0, len(blocks)))
+                else:
+                    weights = weights / float(np.sum(weights))
+                    idx_block = int(self.rng.choice(len(blocks), p=weights))
+                block = blocks[idx_block]
+                idx = np.asarray(block.features, dtype=int)
+                out = np.asarray(chrom, dtype=np.int8).copy()
+                if idx.size > 0:
+                    if self.rng.random() < 0.70:
+                        out[idx] = 1 - out[idx]
+                    else:
+                        out[idx] = self.rng.integers(0, 2, size=idx.size, dtype=np.int8)
+                    if not np.any(out):
+                        out[int(self.rng.integers(0, self.n_features))] = 1
+                    return out
+        return self._mutate(chrom)
+
+    def _guided_mutate(self, chrom: np.ndarray, evig: RegressionVIG | None) -> np.ndarray:
+        if int(self.config.guided_mutation_checks) <= 0:
+            return self._mutate(chrom)
+        if not self._has_fast_guidance(evig):
+            return self._mutate(chrom)
+        best = None
+        best_score = -np.inf
+        for _ in range(int(self.config.guided_mutation_checks)):
+            cand = self._sample_mutation_candidate(chrom)
+            score = self._fast_guided_subset_score(cand, evig)
+            if score > best_score:
+                best_score = float(score)
+                best = cand
+        assert best is not None
+        return best.astype(np.int8, copy=False)
+
+    def _next_generation_linkage_guided(self, evig: RegressionVIG) -> list[Individual]:
+        elite = max(self.population, key=lambda ind: ind.fitness).copy()
+        new_pop: list[Individual] = [elite]
+        while len(new_pop) < self.config.popsize:
+            p1 = self._tournament().chromosome
+            if len(new_pop) < self.config.popsize - 1:
+                p2 = self._tournament().chromosome
+                if self.rng.random() < self.config.crossover_probability:
+                    c1, c2 = self._guided_crossover(p1, p2, evig)
+                else:
+                    c1, c2 = p1.copy(), p2.copy()
+                new_pop.append(self._make_individual(self._guided_mutate(c1, evig)))
+                new_pop.append(self._make_individual(self._guided_mutate(c2, evig)))
+            else:
+                new_pop.append(self._make_individual(self._guided_mutate(p1, evig)))
+        return self._apply_pre_lr_immigrants(new_pop)
 
     def _next_generation_standard(self) -> list[Individual]:
         elite = max(self.population, key=lambda ind: ind.fitness).copy()

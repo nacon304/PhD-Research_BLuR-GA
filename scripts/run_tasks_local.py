@@ -110,11 +110,11 @@ if __name__ == "__main__":
 
 """
 $env:DATA_DIR = "../Dataset/prepared_feature_selection"
-$env:RESULTS_ROOT = "../Results/results_fs_uniform_positive_medium_highdim"
-$env:TASKS_OUT = "hpc/tasks_fs_uniform_positive_medium_highdim.csv"
+$env:RESULTS_ROOT = "../Results/results_fs_uniform_positive_small"
+$env:TASKS_OUT = "hpc/tasks_fs_uniform_positive_small.csv"
 
 bash hpc/make_fs_uniform_positive_tasks.sh
 
-python scripts/run_tasks_local.py --tasks hpc/tasks_fs_uniform_positive_medium_highdim.csv --workers 4 --threads-per-task 1
+python scripts/run_tasks_local.py --tasks hpc/tasks_fs_uniform_positive_small.csv --workers 5 --threads-per-task 1
 
 """

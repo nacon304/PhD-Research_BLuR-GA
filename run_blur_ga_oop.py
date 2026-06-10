@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("problem", help="Dataset name without .dat, or explicit .dat path")
     parser.add_argument("classifier", type=int, choices=[1, 2], help="1: KNN-3, 2: KNN-5")
-    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3], help="0: standard GA, 1: empirical linkage GA, 2: pairwise Lasso, 3: partial main+pairwise Lasso")
+    parser.add_argument("ga_type", type=int, choices=[0, 1, 2, 3, 4], help="0: standard GA, 1: empirical linkage GA, 2: pairwise Lasso, 3: linkage-guided pair, 4: linkage-guided pair+Fisher")
     parser.add_argument("--data-dir", default=".", help="Directory containing <problem>.dat")
     parser.add_argument("--output-dir", default="results_nested", help="Directory for result CSV files")
     parser.add_argument("--artifact-layout", choices=["both", "nested", "root"], default="root", help="Where to write per-run artifacts. root keeps one compact method folder; nested is HPC-safe for parallel arrays; both writes both layouts.")
@@ -57,12 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-generation-trace", type=str2bool, default=False)
     parser.add_argument("--save-linkage-events", type=str2bool, default=False, help="For linkage-aware variants, save every tested pair event from linkage mutation")
     parser.add_argument("--save-graph-snapshots", type=str2bool, default=False, help="For linkage-aware variants, save cumulative edge lists at generation snapshots")
+    parser.add_argument("--save-evig-edge-files", type=str2bool, default=False, help="For linkage-aware variants, save evig edge files")
     parser.add_argument("--graph-snapshot-interval", type=int, default=1, help="Save graph snapshot every N generations")
     parser.add_argument("--graph-snapshot-top-k", type=int, default=None, help="Optionally save only top-k edges per snapshot")
     parser.add_argument("--graph-snapshot-min-weight", type=float, default=0.0, help="Only save snapshot edges with weight >= this value")
     parser.add_argument("--no-fitness-cache", action="store_true", help="Disable chromosome-level fitness cache")
 
-    # Regression-linkage options for ga_type 2/3.
+    # Regression-linkage options for ga_type 2/3/4.
     parser.add_argument("--lr-gap-gen", type=int, default=1, help="Fit/update the LR linkage graph every N generations")
     parser.add_argument("--lr-min-samples", type=int, default=10, help="Minimum unique evaluated solutions before fitting LR linkage")
     parser.add_argument("--lr-sparse-alpha", type=float, default=0.001, help="Manual Lasso alpha; used as fallback for ga_type 2/3 when --lr-auto-alpha=false")
@@ -84,15 +85,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-matrix-free-tol", type=float, default=1e-4, help="Matrix-free stopping tolerance")
     parser.add_argument("--lr-matrix-free-step-scale", type=float, default=0.5, help="Multiplier for matrix-free proximal step size")
     parser.add_argument("--lr-matrix-free-dtype", choices=["float64", "float32"], default="float32", help="Numerical dtype for matrix-free LR matrices")
+    parser.add_argument("--guided-crossover-checks", type=int, default=40, help="CGGA-style k1: candidate crossovers checked by linkage/Fisher score for ga_type 3/4")
+    parser.add_argument("--guided-mutation-checks", type=int, default=40, help="CGGA-style k2: candidate mutations checked by linkage/Fisher score for ga_type 3/4")
+    parser.add_argument("--guided-pair-weight", type=float, default=1.0, help="Weight of pair/linkage term in ga_type 3/4 fast guidance score")
+    parser.add_argument("--guided-main-weight", type=float, default=1.0, help="Weight of Fisher main-effect term in ga_type 4 fast guidance score")
+    parser.add_argument("--guided-sparsity-weight", type=float, default=0.02, help="Weight of sparsity term in ga_type 3/4 fast guidance score")
 
-    # LTGA building-block diagnostics/search for ga_type 1/2/3.  Search modes are active for ga_type 2/3.
+    # LTGA building-block diagnostics/search for ga_type 1/2/3/4.  Search modes are active for ga_type 2/3.
     parser.add_argument("--build-building-blocks", type=str2bool, default=False, help="Extract LTGA building blocks from the current linkage graph during the run")
     parser.add_argument("--bb-weight-mode", choices=["absolute", "signed", "positive"], default="absolute", help="LTGA mode: absolute uses |w|; signed uses |w| plus same/opposite polarity consistency; positive keeps only positive same-state edges")
+    parser.add_argument("--bb-score-mode", choices=["current", "current_stability", "current_stability_regression"], default="current_stability_regression", help="Building-block score. current_stability_regression applies current score × sqrt(1+history_count) only to ga_type 2/3; ga_type 1 keeps current score.")
+    parser.add_argument("--bb-selection-mode", choices=["count", "coverage_budget"], default="coverage_budget", help="Block selection mode: legacy count cap or chromosome-coverage budget")
     parser.add_argument("--bb-search-mode", choices=["none", "uniform", "pattern_refine"], default="none", help="Use extracted blocks to guide GA search: none, uniform, or pattern_refine")
     parser.add_argument("--bb-gawll-update-interval", type=int, default=None, help="For ga_type=1/GAwLL only: rebuild LTGA building blocks every N generations; defaults to --bb-snapshot-interval")
     parser.add_argument("--bb-min-block-size", type=int, default=2)
     parser.add_argument("--bb-max-block-size", type=int, default=None)
-    parser.add_argument("--bb-max-blocks", type=int, default=20, help="Maximum selected non-overlapping blocks written per snapshot")
+    parser.add_argument("--bb-max-blocks", type=int, default=20, help="Legacy maximum selected non-overlapping blocks for --bb-selection-mode=count")
+    parser.add_argument("--bb-max-blocks-cap", type=int, default=128, help="Hard safety cap on selected blocks for --bb-selection-mode=coverage_budget")
+    parser.add_argument("--bb-coverage-ratio", type=float, default=0.50, help="Coverage budget ratio: max features affected by selected BBs is ceil(ratio*d), bounded by min/cap")
+    parser.add_argument("--bb-coverage-min", type=int, default=10, help="Minimum feature coverage budget for BB selection")
+    parser.add_argument("--bb-coverage-cap", type=int, default=256, help="Maximum feature coverage budget for BB selection")
     parser.add_argument("--bb-snapshot-interval", type=int, default=1, help="Extract/log building blocks every N generations")
     parser.add_argument("--bb-external-penalty", type=float, default=0.25)
     parser.add_argument("--bb-size-penalty", type=float, default=0.01)
@@ -132,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         save_generation_trace=args.save_generation_trace,
         save_linkage_events=args.save_linkage_events,
         save_graph_snapshots=args.save_graph_snapshots,
+        save_evig_edge_files=args.save_evig_edge_files,
         graph_snapshot_interval=args.graph_snapshot_interval,
         graph_snapshot_top_k=args.graph_snapshot_top_k,
         graph_snapshot_min_weight=args.graph_snapshot_min_weight,
@@ -157,13 +170,24 @@ def main(argv: list[str] | None = None) -> None:
         lr_matrix_free_tol=args.lr_matrix_free_tol,
         lr_matrix_free_step_scale=args.lr_matrix_free_step_scale,
         lr_matrix_free_dtype=args.lr_matrix_free_dtype,
+        guided_crossover_checks=args.guided_crossover_checks,
+        guided_mutation_checks=args.guided_mutation_checks,
+        guided_pair_weight=args.guided_pair_weight,
+        guided_main_weight=args.guided_main_weight,
+        guided_sparsity_weight=args.guided_sparsity_weight,
         build_building_blocks=args.build_building_blocks,
         bb_weight_mode=args.bb_weight_mode,
+        bb_score_mode=args.bb_score_mode,
+        bb_selection_mode=args.bb_selection_mode,
         bb_search_mode=args.bb_search_mode,
         bb_gawll_update_interval=args.bb_gawll_update_interval,
         bb_min_block_size=args.bb_min_block_size,
         bb_max_block_size=args.bb_max_block_size,
         bb_max_blocks=args.bb_max_blocks,
+        bb_max_blocks_cap=args.bb_max_blocks_cap,
+        bb_coverage_ratio=args.bb_coverage_ratio,
+        bb_coverage_min=args.bb_coverage_min,
+        bb_coverage_cap=args.bb_coverage_cap,
         bb_snapshot_interval=args.bb_snapshot_interval,
         bb_external_penalty=args.bb_external_penalty,
         bb_size_penalty=args.bb_size_penalty,
@@ -191,7 +215,7 @@ def main(argv: list[str] | None = None) -> None:
     print("\n ***** BLuR-GA / Nested CV Runner *****")
     print(f"Dataset: {dataset.name} | samples={dataset.n_samples} | features={dataset.n_features}")
     print(f"GA type: {ga_cfg.ga_type} | classifier: KNN-{ga_cfg.knn_k}")
-    if ga_cfg.ga_type in {2, 3}:
+    if ga_cfg.ga_type in {2, 3, 4}:
         print(
             f"LR linkage: gap_gen={ga_cfg.lr_gap_gen}, min_samples={ga_cfg.lr_min_samples}, "
             f"auto_min={ga_cfg.lr_auto_min_samples}, auto_alpha={ga_cfg.lr_auto_alpha}, "
@@ -204,11 +228,20 @@ def main(argv: list[str] | None = None) -> None:
                 f"Pre-LR exploration: mutation_multiplier={ga_cfg.pre_lr_mutation_multiplier}, "
                 f"immigrant_rate={ga_cfg.pre_lr_immigrant_rate}; auto-off after first LR fit"
             )
+        if ga_cfg.ga_type in {3, 4}:
+            print(
+                f"Guided operators: crossover_checks={ga_cfg.guided_crossover_checks}, "
+                f"mutation_checks={ga_cfg.guided_mutation_checks}, pair_weight={ga_cfg.guided_pair_weight}, "
+                f"main_weight={ga_cfg.guided_main_weight if ga_cfg.ga_type == 4 else 0.0}, "
+                f"sparsity_weight={ga_cfg.guided_sparsity_weight}"
+            )
     if ga_cfg.build_building_blocks and ga_cfg.ga_type != 0:
         print(
             f"LTGA building blocks: mode={ga_cfg.bb_weight_mode}, search={ga_cfg.bb_search_mode}, "
+            f"score_mode={ga_cfg.bb_score_mode}, selection={ga_cfg.bb_selection_mode}, "
             f"gawll_interval={ga_cfg.bb_gawll_update_interval or ga_cfg.bb_snapshot_interval}, "
-            f"type2/3_update=after_successful_LR, max_blocks={ga_cfg.bb_max_blocks}"
+            f"type2/3_update=after_successful_LR, max_blocks={ga_cfg.bb_max_blocks}, "
+            f"coverage_ratio={ga_cfg.bb_coverage_ratio}, coverage_cap={ga_cfg.bb_coverage_cap}"
         )
     print(f"Nested CV: outer={exp_cfg.outer_folds}, inner={exp_cfg.inner_folds}, repeats={exp_cfg.repeats}")
     print(f"Output: artifact_layout={exp_cfg.artifact_layout}, aggregate_outputs={exp_cfg.write_aggregate_outputs}")

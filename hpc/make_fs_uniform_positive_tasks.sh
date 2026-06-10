@@ -14,9 +14,9 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 DATA_DIR="${DATA_DIR:-../Dataset/prepared_feature_selection}"
-RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_medium_highdim}"
-TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_medium_highdim.csv}"
-DATASET_GROUP="${DATASET_GROUP:-medium_highdim}"
+RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_small}"
+TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_small.csv}"
+DATASET_GROUP="${DATASET_GROUP:-small}"
 # RESULTS_ROOT="${RESULTS_ROOT:-../Results/results_fs_uniform_positive_full}"
 # TASKS_OUT="${TASKS_OUT:-hpc/tasks_fs_uniform_positive_full.csv}"
 # DATASET_GROUP="${DATASET_GROUP:-all}"
@@ -32,15 +32,45 @@ COMMON_ARGS=(
   --data-dir "$DATA_DIR"
   --dataset-group "$DATASET_GROUP"
   --classifiers $CLASSIFIERS
-  --repeat 1
+  --repeat 4
   --inner-folds 4
-  --outer-folds 4
+  --outer-folds 5
+  --popsize 100
+  --max-gen 200
+  # --lr-expected-edges 120
+  # --lr-refit-expected-edges 60
+
+  # Linkage / BB settings
   --bb-pattern-top-fraction 0.20
   --bb-weight-mode positive
+  --bb-score-mode current
+  --bb-selection-mode coverage_budget
   --bb-search-mode uniform
+  --bb-coverage-ratio 0.50
+  --bb-coverage-min 20
+  --bb-coverage-cap 64
+  --bb-max-blocks-cap 32
   --bb-gawll-update-interval 10
+
+  # LR linkage used internally by type 3 / type 4
+  --lr-encoding binary
+  # --lr-gap-gen 5
+  # --lr-auto-min-samples false
+  # --lr-min-samples 100
+  # --lr-edge-top-k 50
+
+  # CGGA-style guided operator
+  --guided-crossover-checks 40
+  --guided-mutation-checks 40
+  --guided-pair-weight 1.0
+  # --guided-main-weight 1.0
+  --guided-sparsity-weight 0.02
+
+  # Pre-LR exploration parameters
   --pre-lr-mutation-multiplier 3.0
   --pre-lr-immigrant-rate 0.10
+
+  # Output settings
   --save-generation-trace true
   --save-graph-snapshots false
   --save-linkage-events false
@@ -65,11 +95,11 @@ make_part standard_ga \
   --bb-search-mode none \
   --pre-lr-explore false
 
-make_part type1_uniform_positive \
-  --output-root "$RESULTS_ROOT" \
-  --ga-types 1 \
-  --build-building-blocks true \
-  --pre-lr-explore false
+# make_part type1_uniform_positive \
+#   --output-root "$RESULTS_ROOT" \
+#   --ga-types 1 \
+#   --build-building-blocks true \
+#   --pre-lr-explore false
 
 make_part type2_uniform_positive_binary_nopre \
   --output-root "$RESULTS_ROOT" \
@@ -97,6 +127,24 @@ make_part type2_uniform_positive_binary_pre \
 #   --ga-types 2 \
 #   --build-building-blocks true \
 #   --lr-encoding spin \
+#   --pre-lr-explore true
+
+# Type 3: CGGA-style guided crossover/mutation, pair linkage only, no pre-explore
+# make_part type3_linkage_guided_pair_signed_nopre \
+#   --output-root "$RESULTS_ROOT" \
+#   --ga-types 3 \
+#   --build-building-blocks true \
+#   --lr-encoding binary \
+#   --bb-weight-mode signed \
+#   --pre-lr-explore false
+
+# # Type 3: CGGA-style guided crossover/mutation, pair linkage only, with pre-explore
+# make_part type3_linkage_guided_pair_signed_pre \
+#   --output-root "$RESULTS_ROOT" \
+#   --ga-types 3 \
+#   --build-building-blocks true \
+#   --lr-encoding binary \
+#   --bb-weight-mode signed \
 #   --pre-lr-explore true
 
 "$PYTHON_BIN" - <<'PY' "$TASKS_OUT" hpc/_task_parts/*.csv
